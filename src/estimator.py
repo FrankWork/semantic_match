@@ -26,7 +26,7 @@ model_dir = "saved_models/model-bimpm/"
 
 # CUDA_VISIBLE_DEVICES=2
 BATCH_SIZE = 100
-EPOCHS = 20
+EPOCHS = 40
 LOG_N_ITER = 100
 
 def get_params():
@@ -150,8 +150,10 @@ class F1Hook(tf.train.SessionRunHook):
     self.all_labels.append(label)
 
   def end(self, session):
-    all_pred = np.concatenate(self.all_pred, axis=0)
-    all_labels = np.concatenate(self.all_labels,axis=0)
+    all_pred = np.concatenate(self.all_pred, axis=1)
+    all_labels = np.concatenate(self.all_labels,axis=1)
+    all_pred = np.reshape(all_pred, [-1])
+    all_labels = np.reshape(all_labels, [-1])
     f1 = f1_score(all_labels, all_pred, average='macro')
     # np.save('prob.npy', all_prob)
     # np.save('labels.npy', all_labels)
