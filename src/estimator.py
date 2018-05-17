@@ -11,6 +11,7 @@ import random
 import time
 import numpy as np
 import tensorflow as tf
+from sklearn.metrics import f1_score
 from model_bimpm import ModelBiMPM
 
 
@@ -23,9 +24,10 @@ ccks_records_basename = out_dir+'/ccks_%s.%d.tfrecords'
 
 model_dir = "saved_models/model-bimpm/"
 
+# CUDA_VISIBLE_DEVICES=2
 BATCH_SIZE = 100
 EPOCHS = 20
-LOG_N_ITER = 10
+LOG_N_ITER = 100
 
 def get_params():
   return {
@@ -94,7 +96,7 @@ def train_input_fn():
   """An input function for training"""
   atec_files = [atec_records_basename % ('train', i) for i in range(4)]
   ccks_files = [ccks_records_basename % ('train', i) for i in range(10)]
-  train_filenames = atec_files
+  train_filenames = atec_files + ccks_files
   return _input_fn(train_filenames, EPOCHS, BATCH_SIZE, shuffle=True)
 
 def test_input_fn():
@@ -132,6 +134,30 @@ def debug_model():
     print(prob)
     print(pred)
 
+class F1Hook(tf.train.SessionRunHook):
+  def __init__(self, pred_tensor, labels_tensor):
+    self.pred_tensor = pred_tensor
+    self.labels_tensor = labels_tensor
+    self.all_pred=[]
+    self.all_labels = []
+  
+  def before_run(self, run_context):
+    return tf.train.SessionRunArgs([self.pred_tensor, self.labels_tensor])
+  
+  def after_run(self, run_context, run_values):
+    prob, label = run_values.results
+    self.all_pred.append(prob)
+    self.all_labels.append(label)
+
+  def end(self, session):
+    all_pred = np.concatenate(self.all_pred, axis=0)
+    all_labels = np.concatenate(self.all_labels,axis=0)
+    f1 = f1_score(all_labels, all_pred, average='macro')
+    # np.save('prob.npy', all_prob)
+    # np.save('labels.npy', all_labels)
+    # tf.logging.info('save results to .npy file')
+    tf.logging.info("f1: %.3f" % f1)
+
 def my_model(features, labels, mode, params):
   """DNN with three hidden layers, and dropout of 0.1 probability."""
   word_embed = np.load(embed_file)
@@ -143,9 +169,10 @@ def my_model(features, labels, mode, params):
   metrics = {'accuracy': m.acc}
   tf.summary.scalar('accuracy', m.acc[1])
 
+  f1_hook = F1Hook(m.pred,  labels)
   if mode == tf.estimator.ModeKeys.EVAL:
         return tf.estimator.EstimatorSpec(
-            mode, loss=m.loss, eval_metric_ops=metrics, evaluation_hooks=[])
+            mode, loss=m.loss, eval_metric_ops=metrics, evaluation_hooks=[f1_hook])
 
   # Create training op.
   assert mode == tf.estimator.ModeKeys.TRAIN
@@ -156,50 +183,6 @@ def my_model(features, labels, mode, params):
   
   return tf.estimator.EstimatorSpec(mode, loss=m.loss, train_op=m.train_op, 
                 training_hooks = [logging_hook])
-
-
-class PatTopKHook(tf.train.SessionRunHook):
-  def __init__(self, prob_tensor, labels_tensor):
-    self.prob_tensor = prob_tensor
-    self.labels_tensor = labels_tensor
-    self.all_prob=[]
-    self.all_labels = []
-  
-  def before_run(self, run_context):
-    return tf.train.SessionRunArgs([self.prob_tensor, self.labels_tensor])
-  
-  def after_run(self, run_context, run_values):
-    prob, label = run_values.results
-    self.all_prob.append(prob)
-    self.all_labels.append(label)
-
-  def end(self, session):
-    all_prob = np.concatenate(self.all_prob, axis=0)
-    all_labels = np.concatenate(self.all_labels,axis=0)
-
-    np.save('prob.npy', all_prob)
-    np.save('labels.npy', all_labels)
-    tf.logging.info('save results to .npy file')
-    
-    bag_size, num_class = all_prob.shape
-    mask = np.ones([num_class])
-    mask[0]=0
-    mask_prob = np.reshape(all_prob*mask, [-1])
-    idx_prob = mask_prob.argsort()
-
-    one_hot_labels = np.zeros([bag_size, num_class])
-    one_hot_labels[np.arange(bag_size), all_labels] = 1
-    one_hot_labels = np.reshape(one_hot_labels, [-1])
-
-    idx = idx_prob[-100:][::-1]
-    p100 = np.mean(one_hot_labels[idx])
-    idx = idx_prob[-200:][::-1]
-    p200 = np.mean(one_hot_labels[idx])
-    idx = idx_prob[-500:][::-1]
-    p500 = np.mean(one_hot_labels[idx])
-
-    tf.logging.info("p@100: %.3f p@200: %.3f p@500: %.3f" % (p100, p200, p500))
-    tf.logging.info(all_prob[-1][:5])
 
 def main(_):
   # if not os.path.exists(FLAGS.out_dir):

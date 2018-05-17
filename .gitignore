@@ -9,3 +9,7 @@ Quora-Question-Pairs/
 vocab.all
 tmp*
 *.pyc
+src-eval.tar.gz
+src-eval/embed.npy
+src-eval/model-bimpm/
+saved_models/
