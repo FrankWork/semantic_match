@@ -60,7 +60,7 @@ def convert_example(line):
                   context=features({
                     'label': int64_feature([label]),
                     'len1': int64_feature([len1]),
-                    'len1': int64_feature([len2]),
+                    'len2': int64_feature([len2]),
                   }),
                   feature_lists=feature_lists({
                       "s1": feature_list(s1),
@@ -107,5 +107,5 @@ def convert_tfrecords(txt_file, records_basename, num_dev=NUM_DEV, shuffle=True)
     write_tfrecords(train_set, records_basename, "train")
 
     
-# convert_tfrecords(atec_train, atec_records_basename)
+convert_tfrecords(atec_train, atec_records_basename)
 convert_tfrecords(ccks_train, ccks_records_basename, num_dev=0)

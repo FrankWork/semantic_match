@@ -8,3 +8,4 @@ process/
 Quora-Question-Pairs/
 vocab.all
 tmp*
+*.pyc
