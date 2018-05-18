@@ -15,11 +15,13 @@ import tensorflow as tf
 from sklearn.metrics import f1_score
 from model_bimpm import ModelBiMPM
 from model_sialstm import ModelSiameseLSTM
+from model_siacnn import ModelSiameseCNN
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--model", help="bimpm, sialstm, debug")
+parser.add_argument("--model", help="bimpm, sialstm, siacnn, debug")
 parser.add_argument("--mode", default="train", help="train, test")
 parser.add_argument("--epochs", default=40, help="", type=int)
+parser.add_argument("--gpu", default=0, help="")
 args = parser.parse_args()
 
 # export CUDA_VISIBLE_DEVICES=2
@@ -30,12 +32,16 @@ if args.model == "bimpm":
   Model = ModelBiMPM
 elif args.model == "sialstm":
   Model = ModelSiameseLSTM
+elif args.model == "siacnn":
+  Model = ModelSiameseCNN
 elif args.model == "debug":
   pass
 else:
   raise Exception('model not in bimpm, sialstm')
 
 model_dir = "saved_models/model-%s/" % args.model
+
+os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
 out_dir = "process"
 vocab_file = out_dir + "/vocab.txt"
@@ -223,6 +229,9 @@ def main(_):
   # debug_model()
   else:
     params = get_params()
+    # config = tf.ConfigProto()
+    # config.gpu_options.allow_growth=True
+
     classifier = tf.estimator.Estimator(
           model_fn=my_model,
           model_dir=model_dir,
