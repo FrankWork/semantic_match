@@ -6,6 +6,23 @@ from keras.layers import *
 from keras.activations import softmax
 from keras.models import Model
 
+def biRNN(inputs, length, hidden_size, name="biRNN", reuse=False):
+  # rnn_cells = {
+  #   'GRU': tf.nn.rnn_cell.GRUCell,
+  #   'LSTM': tf.nn.rnn_cell.BasicLSTMCell,
+  # }
+  cell = tf.nn.rnn_cell.BasicLSTMCell
+  with tf.variable_scope(name, reuse=reuse):
+    fw_rnn_cell = cell(hidden_size)
+    bw_rnn_cell = cell(hidden_size)
+    
+    rnn_outputs, _ = tf.nn.bidirectional_dynamic_rnn(fw_rnn_cell,
+                                                        bw_rnn_cell,
+                                                        inputs,
+                                                        sequence_length=length,
+                                                        dtype=tf.float32)
+    output = tf.concat([rnn_outputs[0], rnn_outputs[1]], axis=2)
+  return output
 
 def subtract(input_1, input_2):
     minus_input_2 = Lambda(lambda x: -x)(input_2)
@@ -39,6 +56,7 @@ class ModelESIM(object):
     hidden_size   = params['hidden_size']
     dropout       = params['dropout']
     learning_rate = params['learning_rate']
+    max_norm      = 10
 
     K.set_learning_phase(training)
     
@@ -51,9 +69,11 @@ class ModelESIM(object):
     q2_embed = BatchNormalization(axis=2)(s2)
 
     # Encoding
-    encode = Bidirectional(LSTM(hidden_size, return_sequences=True))
-    q1_encoded = encode(q1_embed)
-    q2_encoded = encode(q2_embed)
+    # encode = Bidirectional(LSTM(hidden_size, return_sequences=True))
+    # q1_encoded = encode(q1_embed)
+    # q2_encoded = encode(q2_embed)
+    q1_encoded = biRNN(q1_embed, len1, hidden_size, "encode")
+    q2_encoded = biRNN(q2_embed, len2, hidden_size, "encode")
     
     # Alignment
     q1_aligned, q2_aligned = align(q1_encoded, q2_encoded)
@@ -61,9 +81,11 @@ class ModelESIM(object):
     # Compare
     q1_combined = concatenate([q1_encoded, q2_aligned, subtract(q1_encoded, q2_aligned), multiply([q1_encoded, q2_aligned])])
     q2_combined = concatenate([q2_encoded, q1_aligned, subtract(q2_encoded, q1_aligned), multiply([q2_encoded, q1_aligned])]) 
-    compare = Bidirectional(LSTM(hidden_size, return_sequences=True))
-    q1_compare = compare(q1_combined)
-    q2_compare = compare(q2_combined)
+    # compare = Bidirectional(LSTM(hidden_size, return_sequences=True))
+    # q1_compare = compare(q1_combined)
+    # q2_compare = compare(q2_combined)
+    q1_compare = biRNN(q1_combined, len1, hidden_size, "compare")
+    q2_compare = biRNN(q2_combined, len2, hidden_size, "compare")
     
     # Aggregate
     x = aggregate(q1_compare, q2_compare)
@@ -85,5 +107,8 @@ class ModelESIM(object):
       update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
       with tf.control_dependencies(update_ops):
         # Ensures that we execute the update_ops before performing the train_step
-        # TODO clip norm
-        self.train_op = optimizer.minimize(self.loss, global_step=self.global_step)
+        gradients, variables = zip(*optimizer.compute_gradients(self.loss))
+        gradients, _ = tf.clip_by_global_norm(gradients, max_norm)
+        self.train_op = optimizer.apply_gradients(zip(gradients, variables), 
+                                                  global_step=self.global_step)
+        # self.train_op = optimizer.minimize(self.loss, global_step=self.global_step)

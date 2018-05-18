@@ -13,10 +13,12 @@ import argparse
 import numpy as np
 import tensorflow as tf
 from sklearn.metrics import f1_score
-from model_bimpm import ModelBiMPM
+
+from model_kerasqqp import ModelKerasQQP
 from model_sialstm import ModelSiameseLSTM
 from model_siacnn import ModelSiameseCNN
 from model_esim import ModelESIM
+from model_bimpm import ModelBiMPM
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", help="bimpm, sialstm, siacnn, debug")
@@ -30,10 +32,11 @@ args = parser.parse_args()
 # python src/estimator.py --model sialstm
 
 models = {
-  "bimpm":ModelBiMPM,
+  "kerasqqp":ModelKerasQQP,
   "sialstm":ModelSiameseLSTM,
   "siacnn":ModelSiameseCNN,
-  "esim":ModelESIM
+  "esim":ModelESIM,
+  "bimpm":ModelBiMPM
 }
 
 if args.model in models :
