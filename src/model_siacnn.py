@@ -41,15 +41,17 @@ class ModelSiameseCNN(object):
     hidden_size   = params['hidden_size']
     dropout       = params['dropout']
     learning_rate = params['learning_rate']
-    num_filters   = [hidden_size, hidden_size, hidden_size]
+    num_filters   = [100, 100, 100]
     filter_sizes  = [2,3,4]
 
     K.set_learning_phase(training)
     
     with tf.device('/cpu:0'):
-      embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=True)
+      embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=False)
       s1 = tf.nn.embedding_lookup(embedding, s1)
       s2 = tf.nn.embedding_lookup(embedding, s2)
+      s1 = tf.layers.dropout(s1, 0.2, training=training)
+      s2 = tf.layers.dropout(s2, 0.2, training=training)
 
     # siamese layers
     out1 = cnn_layers(s1, num_filters, filter_sizes)
@@ -60,18 +62,9 @@ class ModelSiameseCNN(object):
 
     merged = concatenate([out1, out2])
     merged = Dense(hidden_size, activation='relu')(merged)
-    merged = Dropout(dropout)(merged)
-    merged = BatchNormalization()(merged)
-    merged = Dense(hidden_size, activation='relu')(merged)
-    merged = Dropout(dropout)(merged)
-    merged = BatchNormalization()(merged)
-    merged = Dense(hidden_size, activation='relu')(merged)
-    merged = Dropout(dropout)(merged)
-    merged = BatchNormalization()(merged)
-    merged = Dense(hidden_size, activation='relu')(merged)
-    merged = Dropout(dropout)(merged)
-    merged = BatchNormalization()(merged)
-
+    # merged = Dropout(dropout)(merged)
+    # merged = BatchNormalization()(merged)
+    
     logits = tf.squeeze(Dense(1)(merged))
 
     self.prob = tf.sigmoid(logits)

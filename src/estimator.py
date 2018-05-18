@@ -16,6 +16,7 @@ from sklearn.metrics import f1_score
 from model_bimpm import ModelBiMPM
 from model_sialstm import ModelSiameseLSTM
 from model_siacnn import ModelSiameseCNN
+from model_esim import ModelESIM
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", help="bimpm, sialstm, siacnn, debug")
@@ -28,16 +29,19 @@ args = parser.parse_args()
 # python src/estimator.py --model bimpm
 # python src/estimator.py --model sialstm
 
-if args.model == "bimpm":
-  Model = ModelBiMPM
-elif args.model == "sialstm":
-  Model = ModelSiameseLSTM
-elif args.model == "siacnn":
-  Model = ModelSiameseCNN
+models = {
+  "bimpm":ModelBiMPM,
+  "sialstm":ModelSiameseLSTM,
+  "siacnn":ModelSiameseCNN,
+  "esim":ModelESIM
+}
+
+if args.model in models :
+  Model = models[args.model]
 elif args.model == "debug":
   pass
 else:
-  raise Exception('model not in bimpm, sialstm')
+  raise Exception('model not in %s' % ' '.join(models.keys()))
 
 model_dir = "saved_models/model-%s/" % args.model
 
