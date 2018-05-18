@@ -20,7 +20,7 @@ class ModelBiMPM(object):
 
     K.set_learning_phase(training)
   
-    embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=False)
+    embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=True)
     with tf.device('/cpu:0'):
       s1 = tf.nn.embedding_lookup(embedding, s1)
       s2 = tf.nn.embedding_lookup(embedding, s2)
@@ -45,14 +45,15 @@ class ModelBiMPM(object):
     merged = Dropout(dropout)(merged)
     merged = BatchNormalization()(merged)
 
-    logits = Dense(1)(merged)
+    logits = tf.squeeze(Dense(1)(merged))
 
     self.prob = tf.sigmoid(logits)
     self.pred = tf.rint(self.prob)
     self.acc = tf.metrics.accuracy(labels=labels, predictions=self.pred)
 
     self.loss = tf.reduce_mean(
-                  tf.nn.sigmoid_cross_entropy_with_logits(labels=labels, logits=logits))
+                  tf.nn.sigmoid_cross_entropy_with_logits(
+                                    labels=tf.to_float(labels), logits=logits))
       
     if training:
       self.global_step = tf.train.get_or_create_global_step()
@@ -62,3 +63,18 @@ class ModelBiMPM(object):
       with tf.control_dependencies(update_ops):
         # Ensures that we execute the update_ops before performing the train_step
         self.train_op = optimizer.minimize(self.loss, global_step=self.global_step)
+
+
+# atec 20 epoch
+# INFO:tensorflow:f1: 0.570
+# Test set accuracy: 0.778
+
+
+# atec ccks 20 epoch
+# INFO:tensorflow:f1: 0.584
+# Test set accuracy: 0.780
+
+# atec ccks 40 epoch
+# train acc 0.907
+# INFO:tensorflow:f1: 0.611
+# Test set accuracy: 0.777

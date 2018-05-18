@@ -9,11 +9,33 @@ import codecs
 import os
 import random
 import time
+import argparse
 import numpy as np
 import tensorflow as tf
 from sklearn.metrics import f1_score
 from model_bimpm import ModelBiMPM
+from model_sialstm import ModelSiameseLSTM
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--model", help="bimpm, sialstm, debug")
+parser.add_argument("--mode", default="train", help="train, test")
+parser.add_argument("--epochs", default=40, help="", type=int)
+args = parser.parse_args()
+
+# export CUDA_VISIBLE_DEVICES=2
+# python src/estimator.py --model bimpm
+# python src/estimator.py --model sialstm
+
+if args.model == "bimpm":
+  Model = ModelBiMPM
+elif args.model == "sialstm":
+  Model = ModelSiameseLSTM
+elif args.model == "debug":
+  pass
+else:
+  raise Exception('model not in bimpm, sialstm')
+
+model_dir = "saved_models/model-%s/" % args.model
 
 out_dir = "process"
 vocab_file = out_dir + "/vocab.txt"
@@ -22,11 +44,8 @@ embed_file = out_dir + "/embed.npy"
 atec_records_basename = out_dir+'/atec_%s.%d.tfrecords'
 ccks_records_basename = out_dir+'/ccks_%s.%d.tfrecords'
 
-model_dir = "saved_models/model-bimpm/"
-
 # CUDA_VISIBLE_DEVICES=2
 BATCH_SIZE = 100
-EPOCHS = 40
 LOG_N_ITER = 100
 
 def get_params():
@@ -35,6 +54,8 @@ def get_params():
         "embed_dim": 256,
         "hidden_size": 200, 
         "dropout": 0.1,
+        "rnn_dropout":0.5,
+        "max_norm": 5.0,
         # "num_filters" : 230,
         # "kernel_size" : 3,
         # "num_rels" : 53,
@@ -97,7 +118,7 @@ def train_input_fn():
   atec_files = [atec_records_basename % ('train', i) for i in range(4)]
   ccks_files = [ccks_records_basename % ('train', i) for i in range(10)]
   train_filenames = atec_files + ccks_files
-  return _input_fn(train_filenames, EPOCHS, BATCH_SIZE, shuffle=True)
+  return _input_fn(train_filenames, args.epochs, BATCH_SIZE, shuffle=True)
 
 def test_input_fn():
   test_filenames = [atec_records_basename % ('dev', 0)]
@@ -105,7 +126,8 @@ def test_input_fn():
 
 def debug_inputs():
   vocab, _ = load_vocab()
-  dataset = test_input_fn()
+  # dataset = test_input_fn()
+  dataset = train_input_fn()
   iter = dataset.make_one_shot_iterator()
   batch_data = iter.get_next()
 
@@ -116,10 +138,15 @@ def debug_inputs():
     # for x in s1[0]:
     #   tmp.append(vocab[x])
     # print(' '.join(tmp))
+    i = 0
     while not sess.should_stop():
       feature, label = sess.run(batch_data)
-      len1, len2, s1, s2 = feature
-      print(s1, s2)
+      i += 1
+      if i % 10000==0:
+        print(i)
+  print(i)
+  # iter 50 for test
+  # iter 1344 for train
 
 def debug_model():
   dataset = test_input_fn()
@@ -150,8 +177,8 @@ class F1Hook(tf.train.SessionRunHook):
     self.all_labels.append(label)
 
   def end(self, session):
-    all_pred = np.concatenate(self.all_pred, axis=1)
-    all_labels = np.concatenate(self.all_labels,axis=1)
+    all_pred = np.concatenate(self.all_pred, axis=0)
+    all_labels = np.concatenate(self.all_labels,axis=0)
     all_pred = np.reshape(all_pred, [-1])
     all_labels = np.reshape(all_labels, [-1])
     f1 = f1_score(all_labels, all_pred, average='macro')
@@ -165,7 +192,7 @@ def my_model(features, labels, mode, params):
   word_embed = np.load(embed_file)
 
   training = mode == tf.estimator.ModeKeys.TRAIN
-  m = ModelBiMPM(params, word_embed, features, labels, training)
+  m = Model(params, word_embed, features, labels, training)
   
   # Compute evaluation metrics.
   metrics = {'accuracy': m.acc}
@@ -191,20 +218,25 @@ def main(_):
   #   os.makedirs(FLAGS.out_dir)
   
   start_time = time.time()
-  params = get_params()
-  classifier = tf.estimator.Estimator(
-        model_fn=my_model,
-        model_dir=model_dir,
-        params=params)
-  classifier.train(input_fn=train_input_fn)
+  if args.model == 'debug':
+    debug_inputs()
+  # debug_model()
+  else:
+    params = get_params()
+    classifier = tf.estimator.Estimator(
+          model_fn=my_model,
+          model_dir=model_dir,
+          params=params)
+    
+    if args.mode == "train":
+      classifier.train(input_fn=train_input_fn)
 
-  eval_result = classifier.evaluate(input_fn=test_input_fn)
-  tf.logging.info('\nTest set accuracy: {accuracy:0.3f}\n'.format(**eval_result))
+    eval_result = classifier.evaluate(input_fn=test_input_fn)
+    tf.logging.info('\nTest set accuracy: {accuracy:0.3f}\n'.format(**eval_result))
   duration = time.time() - start_time
   tf.logging.info("elapsed: %.2f hours" % (duration/3600))
 
-  # debug_inputs()
-  # debug_model()
+  
     
 if __name__=='__main__':
   tf.logging.set_verbosity(tf.logging.INFO)

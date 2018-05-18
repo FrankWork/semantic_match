@@ -106,3 +106,8 @@ class ModelSiameseLSTM(object):
         gradients, _ = tf.clip_by_global_norm(gradients, max_norm)
         self.train_op = optimizer.apply_gradients(zip(gradients, variables), 
                                                   global_step=self.global_step)
+        # self.train_op = optimizer.minimize(self.loss, global_step=self.global_step)
+
+# step 10030
+# f1: 0.628 accuracy: 0.699
+# 10s

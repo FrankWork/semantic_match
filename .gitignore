@@ -1,11 +1,7 @@
 data/
-multihead-siamese-nets/
-Quora-Paraphrase-Question-Identification/
+github/
 README.md
-Structured-Self-Attentive-Sentence-Embedding/
-keras-quora-question-pairs/
 process/
-Quora-Question-Pairs/
 vocab.all
 tmp*
 *.pyc
