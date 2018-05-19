@@ -26,7 +26,7 @@ parser.add_argument("--model", help="bimpm, sialstm, siacnn, debug")
 parser.add_argument("--mode", default="train", help="train, test")
 parser.add_argument("--epochs", default=20, help="", type=int)
 parser.add_argument("--eval_minutes", default=5, help="", type=int)
-parser.add_argument("--gpu", default=0, help="")
+parser.add_argument("--gpu", default='0', help="")
 args = parser.parse_args()
 
 # export CUDA_VISIBLE_DEVICES=2
