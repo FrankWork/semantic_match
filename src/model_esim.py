@@ -13,8 +13,8 @@ def biRNN(inputs, length, hidden_size, name="biRNN", reuse=False):
   # }
   cell = tf.nn.rnn_cell.BasicLSTMCell
   with tf.variable_scope(name, reuse=reuse):
-    fw_rnn_cell = cell(hidden_size)
-    bw_rnn_cell = cell(hidden_size)
+    fw_rnn_cell = cell(hidden_size, name='fw')
+    bw_rnn_cell = cell(hidden_size, name='bw')
     
     rnn_outputs, _ = tf.nn.bidirectional_dynamic_rnn(fw_rnn_cell,
                                                         bw_rnn_cell,
@@ -73,7 +73,7 @@ class ModelESIM(object):
     # q1_encoded = encode(q1_embed)
     # q2_encoded = encode(q2_embed)
     q1_encoded = biRNN(q1_embed, len1, hidden_size, "encode")
-    q2_encoded = biRNN(q2_embed, len2, hidden_size, "encode")
+    q2_encoded = biRNN(q2_embed, len2, hidden_size, "encode", reuse=True)
     
     # Alignment
     q1_aligned, q2_aligned = align(q1_encoded, q2_encoded)
@@ -85,7 +85,7 @@ class ModelESIM(object):
     # q1_compare = compare(q1_combined)
     # q2_compare = compare(q2_combined)
     q1_compare = biRNN(q1_combined, len1, hidden_size, "compare")
-    q2_compare = biRNN(q2_combined, len2, hidden_size, "compare")
+    q2_compare = biRNN(q2_combined, len2, hidden_size, "compare", reuse=True)
     
     # Aggregate
     x = aggregate(q1_compare, q2_compare)

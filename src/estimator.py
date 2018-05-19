@@ -9,10 +9,11 @@ import codecs
 import os
 import random
 import time
+import math
 import argparse
 import numpy as np
 import tensorflow as tf
-from sklearn.metrics import f1_score
+from sklearn.metrics import precision_score, recall_score
 
 from model_kerasqqp import ModelKerasQQP
 from model_sialstm import ModelSiameseLSTM
@@ -23,7 +24,7 @@ from model_bimpm import ModelBiMPM
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", help="bimpm, sialstm, siacnn, debug")
 parser.add_argument("--mode", default="train", help="train, test")
-parser.add_argument("--epochs", default=40, help="", type=int)
+parser.add_argument("--epochs", default=20, help="", type=int)
 parser.add_argument("--gpu", default=0, help="")
 args = parser.parse_args()
 
@@ -59,7 +60,11 @@ ccks_records_basename = out_dir+'/ccks_%s.%d.tfrecords'
 
 # CUDA_VISIBLE_DEVICES=2
 BATCH_SIZE = 100
+n_instance = 10*10000 + 39346 - 5000
+MAX_STEPS = math.ceil(n_instance * args.epochs / BATCH_SIZE)
 LOG_N_ITER = 100
+
+
 
 def get_params():
   return {
@@ -190,15 +195,18 @@ class F1Hook(tf.train.SessionRunHook):
     self.all_labels.append(label)
 
   def end(self, session):
-    all_pred = np.concatenate(self.all_pred, axis=0)
-    all_labels = np.concatenate(self.all_labels,axis=0)
-    all_pred = np.reshape(all_pred, [-1])
-    all_labels = np.reshape(all_labels, [-1])
-    f1 = f1_score(all_labels, all_pred, average='macro')
+    y_pred = np.concatenate(self.all_pred, axis=0)
+    y_true = np.concatenate(self.all_labels,axis=0)
+    y_pred = np.reshape(y_pred, [-1])
+    y_true = np.reshape(y_true, [-1])
+
+    p = precision_score(y_true, y_pred)
+    r = recall_score(y_true, y_pred)
+    f1 = 2 * (p * r) / (p + r)
     # np.save('prob.npy', all_prob)
     # np.save('labels.npy', all_labels)
     # tf.logging.info('save results to .npy file')
-    tf.logging.info("f1: %.3f" % f1)
+    tf.logging.info("p: %.3f r: %.3f f1: %.3f" % (p, r, f1))
 
 def my_model(features, labels, mode, params):
   """DNN with three hidden layers, and dropout of 0.1 probability."""
@@ -245,13 +253,16 @@ def main(_):
           params=params)
     
     if args.mode == "train":
-      classifier.train(input_fn=train_input_fn)
-
-    eval_result = classifier.evaluate(input_fn=test_input_fn)
-    tf.logging.info('\nTest set accuracy: {accuracy:0.3f}\n'.format(**eval_result))
+      # classifier.train(input_fn=train_input_fn)
+      train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=MAX_STEPS)
+      eval_spec = tf.estimator.EvalSpec(input_fn=test_input_fn, 
+                                        steps=None, throttle_secs=60*2)
+      tf.estimator.train_and_evaluate(classifier, train_spec, eval_spec)
+    else:
+      eval_result = classifier.evaluate(input_fn=test_input_fn)
+      tf.logging.info('\nTest set accuracy: {accuracy:0.3f}\n'.format(**eval_result))
   duration = time.time() - start_time
   tf.logging.info("elapsed: %.2f hours" % (duration/3600))
-
   
     
 if __name__=='__main__':
