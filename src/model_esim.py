@@ -17,27 +17,21 @@ def biRNN(inputs, length, hidden_size, name="biRNN", reuse=False):
     bw_rnn_cell = cell(hidden_size, name='bw')
     
     rnn_outputs, _ = tf.nn.bidirectional_dynamic_rnn(fw_rnn_cell,
-                                                        bw_rnn_cell,
-                                                        inputs,
-                                                        sequence_length=length,
-                                                        dtype=tf.float32)
+                                                      bw_rnn_cell,
+                                                      inputs,
+                                                      sequence_length=length,
+                                                      dtype=tf.float32)
     output = tf.concat([rnn_outputs[0], rnn_outputs[1]], axis=2)
   return output
 
-def subtract(input_1, input_2):
-    minus_input_2 = Lambda(lambda x: -x)(input_2)
-    return add([input_1, minus_input_2])
-
-def aggregate(input_1, input_2, num_dense=300, dropout_rate=0.5):
+def aggregate(input_1, input_2, num_dense=200, dropout_rate=0.5):
     feat1 = concatenate([GlobalAvgPool1D()(input_1), GlobalMaxPool1D()(input_1)])
     feat2 = concatenate([GlobalAvgPool1D()(input_2), GlobalMaxPool1D()(input_2)])
+
     x = concatenate([feat1, feat2])
-    x = BatchNormalization()(x)
-    x = Dense(num_dense, activation='relu')(x)
-    x = BatchNormalization()(x)
     x = Dropout(dropout_rate)(x)
+    
     x = Dense(num_dense, activation='relu')(x)
-    x = BatchNormalization()(x)
     x = Dropout(dropout_rate)(x)
     return x    
 
@@ -49,13 +43,18 @@ def align(input_1, input_2):
     in2_aligned = Dot(axes=1)([w_att_2, input_2])
     return in1_aligned, in2_aligned
 
+def proj(x, unit, dropout_rate):
+  x = Dense(unit, activation='relu')(x)
+  x = Dropout(dropout_rate)(x)
+  return x
+
 class ModelESIM(object):
   def __init__(self, params, word2vec, features, labels, training=False):
     len1, len2, s1, s2 = features
     embed_dim     = params['embed_dim']
-    hidden_size   = params['hidden_size']
-    dropout       = params['dropout']
-    learning_rate = params['learning_rate']
+    hidden_size   = params['hidden_size'] # 300
+    input_keep    = 0.8
+    learning_rate = params['learning_rate'] # 0.0004
     max_norm      = 10
 
     K.set_learning_phase(training)
@@ -64,28 +63,26 @@ class ModelESIM(object):
       embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=False)
       s1 = tf.nn.embedding_lookup(embedding, s1)
       s2 = tf.nn.embedding_lookup(embedding, s2)
-
-    q1_embed = BatchNormalization(axis=2)(s1)
-    q2_embed = BatchNormalization(axis=2)(s2)
+    if training:
+      s1 = tf.nn.dropout(s1, input_keep)
+      s2 = tf.nn.dropout(s2, input_keep)
 
     # Encoding
-    # encode = Bidirectional(LSTM(hidden_size, return_sequences=True))
-    # q1_encoded = encode(q1_embed)
-    # q2_encoded = encode(q2_embed)
-    q1_encoded = biRNN(q1_embed, len1, hidden_size, "encode")
-    q2_encoded = biRNN(q2_embed, len2, hidden_size, "encode", reuse=True)
+    q1_encoded = biRNN(s1, len1, hidden_size, "encode")
+    q2_encoded = biRNN(s2, len2, hidden_size, "encode", reuse=True)
     
     # Alignment
     q1_aligned, q2_aligned = align(q1_encoded, q2_encoded)
     
     # Compare
-    q1_combined = concatenate([q1_encoded, q2_aligned, subtract(q1_encoded, q2_aligned), multiply([q1_encoded, q2_aligned])])
-    q2_combined = concatenate([q2_encoded, q1_aligned, subtract(q2_encoded, q1_aligned), multiply([q2_encoded, q1_aligned])]) 
-    # compare = Bidirectional(LSTM(hidden_size, return_sequences=True))
-    # q1_compare = compare(q1_combined)
-    # q2_compare = compare(q2_combined)
-    q1_compare = biRNN(q1_combined, len1, hidden_size, "compare")
-    q2_compare = biRNN(q2_combined, len2, hidden_size, "compare", reuse=True)
+    q1_combined = concatenate([q1_encoded, q2_aligned, q1_encoded-q2_aligned, q1_encoded, q2_aligned])
+    q2_combined = concatenate([q2_encoded, q1_aligned, q2_encoded-q1_aligned, q2_encoded, q1_aligned])
+
+    q1_proj = proj(q1_combined, hidden_size, 0.5)
+    q2_proj = proj(q2_combined, hidden_size, 0.5)
+
+    q1_compare = biRNN(q1_proj, len1, hidden_size, "compare")
+    q2_compare = biRNN(q2_proj, len2, hidden_size, "compare", reuse=True)
     
     # Aggregate
     x = aggregate(q1_compare, q2_compare)

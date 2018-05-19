@@ -25,6 +25,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--model", help="bimpm, sialstm, siacnn, debug")
 parser.add_argument("--mode", default="train", help="train, test")
 parser.add_argument("--epochs", default=20, help="", type=int)
+parser.add_argument("--eval_minutes", default=5, help="", type=int)
 parser.add_argument("--gpu", default=0, help="")
 args = parser.parse_args()
 
@@ -246,17 +247,18 @@ def main(_):
     params = get_params()
     # config = tf.ConfigProto()
     # config.gpu_options.allow_growth=True
-
+    # session_config: a ConfigProto
     classifier = tf.estimator.Estimator(
           model_fn=my_model,
           model_dir=model_dir,
+          # config=tf.estimator.RunConfig(session_config=),
           params=params)
     
     if args.mode == "train":
       # classifier.train(input_fn=train_input_fn)
       train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=MAX_STEPS)
       eval_spec = tf.estimator.EvalSpec(input_fn=test_input_fn, 
-                                        steps=None, throttle_secs=60*2)
+                                 steps=None, throttle_secs=60*args.eval_minutes)
       tf.estimator.train_and_evaluate(classifier, train_spec, eval_spec)
     else:
       eval_result = classifier.evaluate(input_fn=test_input_fn)
