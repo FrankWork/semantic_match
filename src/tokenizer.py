@@ -31,9 +31,9 @@ with codecs.open("data/wrong_words.txt", 'r', 'utf8') as f:
     tokens_map[wrong_w] = correct_w
 
 def clean_str(string):
-  string = re.sub("\*\*\*", "1", string)
+  string = re.sub("\*+", "1", string)
   string = re.sub("\d+", "1", string)
-  string = re.sub("[一二三四五六七八九十百千万两]+", "一 ", string)
+  string = re.sub("[一二三四五六七八九]+", "一", string)
   string = re.sub("第一", "第一 ", string)
   for wrong_w in tokens_map:
     correct_w = tokens_map[wrong_w]

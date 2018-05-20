@@ -20,7 +20,7 @@ class ModelKerasQQP(object):
 
     K.set_learning_phase(training)
   
-    embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=True)
+    embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=False)
     with tf.device('/cpu:0'):
       s1 = tf.nn.embedding_lookup(embedding, s1)
       s2 = tf.nn.embedding_lookup(embedding, s2)

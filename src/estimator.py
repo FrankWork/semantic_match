@@ -255,11 +255,11 @@ def main(_):
           params=params)
     
     if args.mode == "train":
-      # classifier.train(input_fn=train_input_fn)
-      train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=MAX_STEPS)
-      eval_spec = tf.estimator.EvalSpec(input_fn=test_input_fn, 
-                                 steps=None, throttle_secs=60*args.eval_minutes)
-      tf.estimator.train_and_evaluate(classifier, train_spec, eval_spec)
+      classifier.train(input_fn=train_input_fn)
+      # train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=MAX_STEPS)
+      # eval_spec = tf.estimator.EvalSpec(input_fn=test_input_fn, 
+      #                            steps=None, throttle_secs=60*args.eval_minutes)
+      # tf.estimator.train_and_evaluate(classifier, train_spec, eval_spec)
     else:
       eval_result = classifier.evaluate(input_fn=test_input_fn)
       tf.logging.info('\nTest set accuracy: {accuracy:0.3f}\n'.format(**eval_result))
