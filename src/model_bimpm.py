@@ -24,8 +24,9 @@ def biRNN(inputs, length, hidden_size, name="biRNN", reuse=False):
     output = tf.concat([rnn_outputs[0], rnn_outputs[1]], axis=2)
   return output
 
-def my_lstm_layer(input_reps, lstm_dim, input_lengths=None, scope_name=None, reuse=False, is_training=True,
-                  dropout_rate=0.2, use_cudnn=True):
+def my_lstm_layer(input_reps, lstm_dim, input_lengths=None, scope_name=None, 
+                reuse=False, is_training=True,
+                dropout_rate=0.2, use_cudnn=True):
     '''
     :param inputs: [batch_size, seq_len, feature_dim]
     :param lstm_dim:
@@ -70,9 +71,9 @@ def highway(in_val, output_size, scope='highway', reuse=False):
     in_val = tf.reshape(in_val, [batch_size * passage_len, output_size])
     with tf.variable_scope(scope, reuse=reuse):
         highway_w = tf.get_variable("highway_w", [output_size, output_size], dtype=tf.float32)
-        highway_b = tf.get_variable("highway_b", [output_size], dtype=tf.float32)
+        highway_b = tf.get_variable("highway_bias", [output_size], dtype=tf.float32)
         full_w = tf.get_variable("full_w", [output_size, output_size], dtype=tf.float32)
-        full_b = tf.get_variable("full_b", [output_size], dtype=tf.float32)
+        full_b = tf.get_variable("full_bias", [output_size], dtype=tf.float32)
         trans = tf.nn.tanh(tf.nn.xw_plus_b(in_val, full_w, full_b))
         gate = tf.nn.sigmoid(tf.nn.xw_plus_b(in_val, highway_w, highway_b))
         outputs = trans*gate + in_val* (1.0- gate)
@@ -385,11 +386,14 @@ class ModelBiMPM(object):
     input_keep    = 0.8
     learning_rate = 0.0005
     max_norm      = 10
+    l2_coef       = 0.0001
+    nN = 30797 
+    nP = 8549
 
     K.set_learning_phase(training)
 
     with tf.device('/cpu:0'):
-      embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=False)
+      embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=True)
       s1 = tf.nn.embedding_lookup(embedding, s1)
       s2 = tf.nn.embedding_lookup(embedding, s2)
     if training:
@@ -408,11 +412,15 @@ class ModelBiMPM(object):
 
     self.prob = tf.sigmoid(logits)
     self.pred = tf.rint(self.prob)
+    # self.pred = tf.to_float( (self.prob/(1-self.prob) * nN/nP) > 1.0 )
     self.acc = tf.metrics.accuracy(labels=labels, predictions=self.pred)
 
     self.loss = tf.reduce_mean(
                   tf.nn.sigmoid_cross_entropy_with_logits(
                                     labels=tf.to_float(labels), logits=logits))
+    l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables()
+                    if 'bias' not in v.name ]) * l2_coef
+    self.loss += l2
 
     if training:
       self.global_step = tf.train.get_or_create_global_step()

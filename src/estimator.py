@@ -4,7 +4,6 @@ from __future__ import unicode_literals
 from __future__ import division
 from __future__ import absolute_import
 
-import jieba
 import codecs
 import os
 import random
@@ -13,7 +12,7 @@ import math
 import argparse
 import numpy as np
 import tensorflow as tf
-from sklearn.metrics import precision_score, recall_score
+from sklearn.metrics import precision_score, recall_score, accuracy_score
 
 from model_kerasqqp import ModelKerasQQP
 from model_sialstm import ModelSiameseLSTM
@@ -22,11 +21,12 @@ from model_esim import ModelESIM
 from model_bimpm import ModelBiMPM
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--model", help="bimpm, sialstm, siacnn, debug")
-parser.add_argument("--mode", default="train", help="train, test")
+parser.add_argument("--model", help="bimpm, sialstm, siacnn")
+parser.add_argument("--mode", default="train_eval", help="train, test, train_eval, debug")
 parser.add_argument("--epochs", default=20, help="", type=int)
 parser.add_argument("--eval_minutes", default=5, help="", type=int)
 parser.add_argument("--gpu", default='0', help="")
+parser.add_argument('--ccks', action='store_true')
 args = parser.parse_args()
 
 # export CUDA_VISIBLE_DEVICES=2
@@ -60,8 +60,10 @@ atec_records_basename = out_dir+'/atec_%s.%d.tfrecords'
 ccks_records_basename = out_dir+'/ccks_%s.%d.tfrecords'
 
 # CUDA_VISIBLE_DEVICES=2
-BATCH_SIZE = 100
-n_instance = 10*10000 + 39346 - 5000
+BATCH_SIZE = 32
+n_instance =  39346 - 5000
+if args.ccks:
+  n_instance += 10*10000
 MAX_STEPS = math.ceil(n_instance * args.epochs / BATCH_SIZE)
 LOG_N_ITER = 100
 
@@ -136,7 +138,9 @@ def train_input_fn():
   """An input function for training"""
   atec_files = [atec_records_basename % ('train', i) for i in range(4)]
   ccks_files = [ccks_records_basename % ('train', i) for i in range(10)]
-  train_filenames = atec_files + ccks_files
+  train_filenames = atec_files #+ ccks_files
+  if args.ccks:
+    train_filenames += ccks_files
   return _input_fn(train_filenames, args.epochs, BATCH_SIZE, shuffle=True)
 
 def test_input_fn():
@@ -173,7 +177,10 @@ def debug_model():
   features, labels = iter.get_next()
 
   word_embed = np.load(embed_file)
-  m = ModelBiMPM(get_params(), word_embed, features, labels, False)
+  m = Model(get_params(), word_embed, features, labels, False)
+
+  for v in tf.trainable_variables():
+    print(v.name)
 
   with tf.train.MonitoredTrainingSession() as sess:
     prob, pred = sess.run([m.prob, m.pred])
@@ -201,13 +208,25 @@ class F1Hook(tf.train.SessionRunHook):
     y_pred = np.reshape(y_pred, [-1])
     y_true = np.reshape(y_true, [-1])
 
-    p = precision_score(y_true, y_pred)
-    r = recall_score(y_true, y_pred)
-    f1 = 2 * (p * r) / (p + r)
     # np.save('prob.npy', all_prob)
     # np.save('labels.npy', all_labels)
     # tf.logging.info('save results to .npy file')
-    tf.logging.info("p: %.3f r: %.3f f1: %.3f" % (p, r, f1))
+    
+    tf.logging.info("=" * 40)
+    acc = accuracy_score(y_true, y_pred)
+    tf.logging.info("|| acc: %.3f" % acc)
+    
+    p = precision_score(y_true, y_pred)
+    r = recall_score(y_true, y_pred)
+    f1 = 2 * (p * r) / (p + r)
+    tf.logging.info("|| binary p: %.3f r: %.3f f1: %.3f" % (p, r, f1))
+
+    p = precision_score(y_true, y_pred, average='macro')
+    r = recall_score(y_true, y_pred, average='macro')
+    f1 = 2 * (p * r) / (p + r)
+    tf.logging.info("|| macro  p: %.3f r: %.3f f1: %.3f" % (p, r, f1))
+    tf.logging.info("=" * 40)
+
 
 def my_model(features, labels, mode, params):
   """DNN with three hidden layers, and dropout of 0.1 probability."""
@@ -241,8 +260,8 @@ def main(_):
   
   start_time = time.time()
   if args.model == 'debug':
-    debug_inputs()
-  # debug_model()
+    # debug_inputs()
+    debug_model()
   else:
     params = get_params()
     # config = tf.ConfigProto()
@@ -256,10 +275,15 @@ def main(_):
     
     if args.mode == "train":
       classifier.train(input_fn=train_input_fn)
-      # train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=MAX_STEPS)
-      # eval_spec = tf.estimator.EvalSpec(input_fn=test_input_fn, 
-      #                            steps=None, throttle_secs=60*args.eval_minutes)
-      # tf.estimator.train_and_evaluate(classifier, train_spec, eval_spec)
+      eval_result = classifier.evaluate(input_fn=test_input_fn)
+      tf.logging.info('\nTest set accuracy: {accuracy:0.3f}\n'.format(**eval_result))
+    elif args.mode == "train_eval":
+      train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=MAX_STEPS)
+      eval_spec = tf.estimator.EvalSpec(input_fn=test_input_fn, 
+                                 steps=None, throttle_secs=60*args.eval_minutes)
+      tf.estimator.train_and_evaluate(classifier, train_spec, eval_spec)
+    elif args.mode == "debug":
+      debug_model()
     else:
       eval_result = classifier.evaluate(input_fn=test_input_fn)
       tf.logging.info('\nTest set accuracy: {accuracy:0.3f}\n'.format(**eval_result))

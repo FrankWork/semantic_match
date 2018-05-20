@@ -1,5 +1,11 @@
 import tensorflow as tf
 
+L = tf.keras.layers
+K = tf.keras.backend
+Dense = L.Dense
+Dropout = L.Dropout
+BatchNormalization = L.BatchNormalization
+
 def manhattan_distance(x1, x2):
   """
   Also known as l1 norm.
@@ -65,35 +71,74 @@ def rnn_layer(inputs, length, hidden_size,
                                     dtype=tf.float32)
   return output
 
+def baisc_attention(x):
+  alpha = tf.layers.dense(tf.nn.tanh(x), 1, use_bias=False) # b,n,1
+  alpha = tf.nn.softmax(alpha, axis=1)
+  vec = tf.matmul(alpha, x, transpose_a=True)
+  vec = tf.squeeze(vec, axis=[1])
+  return vec
+
 class ModelSiameseLSTM(object):
   def __init__(self, params, word2vec, features, labels, training=False):
     len1, len2, s1, s2 = features
     embed_dim     = params['embed_dim']
     hidden_size   = params['hidden_size']
     dropout       = params['dropout']
-    learning_rate = params['learning_rate']
-    max_norm      = params['max_norm']
     rnn_dropout   = params['rnn_dropout']
-    
+    learning_rate = 0.0005
+    max_norm      = 10
+    l2_coef       = 0.0001
     cell_type     = "LSTM"
+    K.set_learning_phase(training)
 
-    embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=False)
+    embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=True)
     with tf.device('/cpu:0'):
       s1 = tf.nn.embedding_lookup(embedding, s1)
       s2 = tf.nn.embedding_lookup(embedding, s2)
 
     # siamese layers
-    outputs_sen1 = rnn_layer(s1, len1, hidden_size, rnn_dropout, training, cell_type)
-    outputs_sen2 = rnn_layer(s2, len2, hidden_size, rnn_dropout, training, cell_type, reuse=True)
+    out1 = rnn_layer(s1, len1, hidden_size, rnn_dropout, training, cell_type)
+    out2 = rnn_layer(s2, len2, hidden_size, rnn_dropout, training, cell_type, reuse=True)
 
-    out1 = tf.reduce_max(outputs_sen1, axis=1)
-    out2 = tf.reduce_max(outputs_sen2, axis=1)
+    out1 = tf.reduce_max(out1, axis=1)
+    out2 = tf.reduce_max(out2, axis=1)
 
-    self.prob = tf.squeeze(manhattan_similarity(out1, out2))
-    self.loss = tf.losses.mean_squared_error(labels, self.prob)
+    # self.prob = tf.squeeze(manhattan_similarity(out1, out2))
+    # self.loss = tf.losses.mean_squared_error(labels, self.prob)
 
+    matched  = tf.concat([out1, out2], axis=1)
+    # matched  = baisc_attention(matched)
+    # matched  = Dense(hidden_size*2, activation='relu')(matched)
+    # matched  = Dropout(dropout)(matched)
+
+    matched = Dense(hidden_size*2, activation='relu')(matched)
+    matched = Dropout(dropout)(matched)
+    matched = BatchNormalization()(matched)
+
+    matched = Dense(hidden_size, activation='relu')(matched)
+    matched = Dropout(dropout)(matched)
+    matched = BatchNormalization()(matched)
+
+    matched = Dense(hidden_size/2, activation='relu')(matched)
+    matched = Dropout(dropout)(matched)
+    matched = BatchNormalization()(matched)
+
+    matched = Dense(hidden_size/2, activation='relu')(matched)
+    matched = Dropout(dropout)(matched)
+    matched = BatchNormalization()(matched)
+
+    logits = tf.squeeze(Dense(1)(matched))
+
+    self.prob = tf.sigmoid(logits)
     self.pred = tf.rint(self.prob)
     self.acc = tf.metrics.accuracy(labels=labels, predictions=self.pred)
+
+    self.loss = tf.reduce_mean(
+                  tf.nn.sigmoid_cross_entropy_with_logits(
+                                    labels=tf.to_float(labels), logits=logits))
+    # l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables()
+    #                 if 'bias' not in v.name ]) * l2_coef
+    # self.loss += l2
 
     if training:
       self.global_step = tf.train.get_or_create_global_step()
