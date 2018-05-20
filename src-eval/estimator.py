@@ -4,7 +4,6 @@ from __future__ import unicode_literals
 from __future__ import division
 from __future__ import absolute_import
 
-import jieba
 import codecs
 import os
 import argparse
@@ -12,7 +11,6 @@ import random
 import time
 import numpy as np
 import tensorflow as tf
-from sklearn.metrics import f1_score
 from model_bimpm import ModelBiMPM
 
 

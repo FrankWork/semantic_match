@@ -4,7 +4,7 @@ L = tf.keras.layers
 K = tf.keras.backend
 Dense = L.Dense
 Dropout = L.Dropout
-BatchNormalization = L.BatchNormalization
+# BatchNormalization = L.BatchNormalization
 
 def manhattan_distance(x1, x2):
   """
@@ -108,24 +108,24 @@ class ModelSiameseLSTM(object):
 
     matched  = tf.concat([out1, out2], axis=1)
     # matched  = baisc_attention(matched)
-    # matched  = Dense(hidden_size*2, activation='relu')(matched)
-    # matched  = Dropout(dropout)(matched)
+    matched  = Dense(hidden_size*2, activation='relu')(matched)
+    matched  = Dropout(dropout)(matched)
 
-    matched = Dense(hidden_size*2, activation='relu')(matched)
-    matched = Dropout(dropout)(matched)
-    matched = BatchNormalization()(matched)
+    # matched = Dense(hidden_size*2, activation='relu')(matched)
+    # matched = Dropout(dropout)(matched)
+    # matched = BatchNormalization()(matched)
 
-    matched = Dense(hidden_size, activation='relu')(matched)
-    matched = Dropout(dropout)(matched)
-    matched = BatchNormalization()(matched)
+    # matched = Dense(hidden_size, activation='relu')(matched)
+    # matched = Dropout(dropout)(matched)
+    # matched = BatchNormalization()(matched)
 
-    matched = Dense(hidden_size/2, activation='relu')(matched)
-    matched = Dropout(dropout)(matched)
-    matched = BatchNormalization()(matched)
+    # matched = Dense(hidden_size/2, activation='relu')(matched)
+    # matched = Dropout(dropout)(matched)
+    # matched = BatchNormalization()(matched)
 
-    matched = Dense(hidden_size/2, activation='relu')(matched)
-    matched = Dropout(dropout)(matched)
-    matched = BatchNormalization()(matched)
+    # matched = Dense(hidden_size/2, activation='relu')(matched)
+    # matched = Dropout(dropout)(matched)
+    # matched = BatchNormalization()(matched)
 
     logits = tf.squeeze(Dense(1)(matched))
 
@@ -136,9 +136,9 @@ class ModelSiameseLSTM(object):
     self.loss = tf.reduce_mean(
                   tf.nn.sigmoid_cross_entropy_with_logits(
                                     labels=tf.to_float(labels), logits=logits))
-    # l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables()
-    #                 if 'bias' not in v.name ]) * l2_coef
-    # self.loss += l2
+    l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables()
+                    if 'bias' not in v.name ]) * l2_coef
+    self.loss += l2
 
     if training:
       self.global_step = tf.train.get_or_create_global_step()

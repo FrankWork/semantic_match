@@ -177,15 +177,16 @@ def debug_model():
   features, labels = iter.get_next()
 
   word_embed = np.load(embed_file)
-  m = Model(get_params(), word_embed, features, labels, False)
+  m = Model(get_params(), word_embed, features, labels, True)
 
   for v in tf.trainable_variables():
     print(v.name)
 
   with tf.train.MonitoredTrainingSession() as sess:
-    prob, pred = sess.run([m.prob, m.pred])
+    prob, pred, _, loss = sess.run([m.prob, m.pred, m.train_op, m.loss])
     print(prob)
     print(pred)
+    print(loss)
 
 class F1Hook(tf.train.SessionRunHook):
   def __init__(self, pred_tensor, labels_tensor):
