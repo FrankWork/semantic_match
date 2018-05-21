@@ -22,17 +22,20 @@ from model_bimpm import ModelBiMPM
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", help="bimpm, sialstm, siacnn")
-parser.add_argument("--mode", default="train_eval", help="train, test, train_eval, debug")
-parser.add_argument("--epochs", default=20, help="", type=int)
-parser.add_argument("--eval_minutes", default=5, help="", type=int)
+parser.add_argument("--model_name", default="", help="default same as --model")
+parser.add_argument("--mode", default="train_eval", 
+                              help="pretrain, train, test, train_eval, debug")
+parser.add_argument("--eval_minutes", default=5, type=int, help="valid in train_eval mode")
+parser.add_argument('--ccks', action='store_true', help="valid in train_eval mode")
 parser.add_argument("--gpu", default='0', help="")
-parser.add_argument('--ccks', action='store_true')
+parser.add_argument("--epochs", default=20, type=int, help="")
 args = parser.parse_args()
 
 # export CUDA_VISIBLE_DEVICES=2
 # python src/estimator.py --model bimpm
 # python src/estimator.py --model sialstm
 
+# Model class
 models = {
   "kerasqqp":ModelKerasQQP,
   "sialstm":ModelSiameseLSTM,
@@ -48,9 +51,11 @@ elif args.model == "debug":
 else:
   raise Exception('model not in %s' % ' '.join(models.keys()))
 
-model_dir = "saved_models/model-%s/" % args.model
+# files
+if args.model_name == "":
+  args.model_name == args.model
 
-os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+model_dir = "saved_models/model-%s/" % args.model_name
 
 out_dir = "process"
 vocab_file = out_dir + "/vocab.txt"
@@ -58,14 +63,28 @@ embed_file = out_dir + "/embed.npy"
 
 atec_records_basename = out_dir+'/atec_%s.%d.tfrecords'
 ccks_records_basename = out_dir+'/ccks_%s.%d.tfrecords'
+atec_records = [atec_records_basename % ('train', i) for i in range(4)]
+ccks_records = [ccks_records_basename % ('train', i) for i in range(10)]
+train_records = []
+dev_records = [atec_records_basename % ('dev', 0)]
 
-# CUDA_VISIBLE_DEVICES=2
-BATCH_SIZE = 32
-n_instance =  39346 - 5000
-if args.ccks:
+# runtime hyper parameters
+
+n_instance = 0 # num training instance
+if args.mode == 'train_eval':
+  n_instance += 39346 - 5000
+  train_records += atec_records
+  if args.ccks:
+    n_instance += 10*10000
+    train_records += ccks_records
+elif args.mode == 'pretrain':
   n_instance += 10*10000
+  train_records += ccks_records
+
+BATCH_SIZE = 32
 MAX_STEPS = math.ceil(n_instance * args.epochs / BATCH_SIZE)
 LOG_N_ITER = 100
+os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
 
 
@@ -136,16 +155,10 @@ def _input_fn(filenames, epochs, batch_size, shuffle=False):
 
 def train_input_fn():
   """An input function for training"""
-  atec_files = [atec_records_basename % ('train', i) for i in range(4)]
-  ccks_files = [ccks_records_basename % ('train', i) for i in range(10)]
-  train_filenames = atec_files #+ ccks_files
-  if args.ccks:
-    train_filenames += ccks_files
-  return _input_fn(train_filenames, args.epochs, BATCH_SIZE, shuffle=True)
+  return _input_fn(train_records, args.epochs, BATCH_SIZE, shuffle=True)
 
-def test_input_fn():
-  test_filenames = [atec_records_basename % ('dev', 0)]
-  return _input_fn(test_filenames, 1, BATCH_SIZE, shuffle=False)
+def dev_input_fn():
+  return _input_fn(dev_records, 1, BATCH_SIZE, shuffle=False)
 
 def debug_inputs():
   vocab, _ = load_vocab()
@@ -256,13 +269,9 @@ def my_model(features, labels, mode, params):
                 training_hooks = [logging_hook])
 
 def main(_):
-  # if not os.path.exists(FLAGS.out_dir):
-  #   os.makedirs(FLAGS.out_dir)
-  
   start_time = time.time()
   if args.model == 'debug':
-    # debug_inputs()
-    debug_model()
+    debug_inputs()
   else:
     params = get_params()
     # config = tf.ConfigProto()
@@ -276,17 +285,16 @@ def main(_):
     
     if args.mode == "train":
       classifier.train(input_fn=train_input_fn)
-      eval_result = classifier.evaluate(input_fn=test_input_fn)
-      tf.logging.info('\nTest set accuracy: {accuracy:0.3f}\n'.format(**eval_result))
-    elif args.mode == "train_eval":
+      classifier.evaluate(input_fn=dev_input_fn)
+    elif args.mode == "train_eval" or args.mode == "pretrain":
       train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=MAX_STEPS)
-      eval_spec = tf.estimator.EvalSpec(input_fn=test_input_fn, 
+      eval_spec = tf.estimator.EvalSpec(input_fn=dev_input_fn, 
                                  steps=None, throttle_secs=60*args.eval_minutes)
       tf.estimator.train_and_evaluate(classifier, train_spec, eval_spec)
     elif args.mode == "debug":
       debug_model()
     else:
-      eval_result = classifier.evaluate(input_fn=test_input_fn)
+      eval_result = classifier.evaluate(input_fn=dev_input_fn)
       tf.logging.info('\nTest set accuracy: {accuracy:0.3f}\n'.format(**eval_result))
   duration = time.time() - start_time
   tf.logging.info("elapsed: %.2f hours" % (duration/3600))

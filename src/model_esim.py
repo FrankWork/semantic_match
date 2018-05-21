@@ -54,8 +54,9 @@ class ModelESIM(object):
     embed_dim     = params['embed_dim']
     hidden_size   = params['hidden_size'] # 300
     input_keep    = 0.8
-    learning_rate = params['learning_rate'] # 0.0004
+    learning_rate = 0.0005
     max_norm      = 10
+    l2_coef       = 0.0001
 
     K.set_learning_phase(training)
     
@@ -96,6 +97,9 @@ class ModelESIM(object):
     self.loss = tf.reduce_mean(
                   tf.nn.sigmoid_cross_entropy_with_logits(
                                     labels=tf.to_float(labels), logits=logits))
+    l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables()
+                    if 'bias' not in v.name ]) * l2_coef
+    self.loss += l2
 
     if training:
       self.global_step = tf.train.get_or_create_global_step()
