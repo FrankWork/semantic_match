@@ -4,7 +4,12 @@ L = tf.keras.layers
 K = tf.keras.backend
 Dense = L.Dense
 Dropout = L.Dropout
-# BatchNormalization = L.BatchNormalization
+BatchNormalization = L.BatchNormalization
+
+def batch_norm(x, is_training):
+  return tf.contrib.layers.batch_norm(inputs=x, 
+                            updates_collections=None, 
+                            is_training=is_training)
 
 def manhattan_distance(x1, x2):
   """
@@ -38,9 +43,8 @@ def manhattan_similarity(x1, x2):
     manhattan_sim = tf.exp(-manhattan_distance(x1, x2))
   return manhattan_sim
 
-def rnn_layer(inputs, length, hidden_size, 
-              dropout, training,
-              bidirectional=True, cell_type='GRU', reuse=False):
+def rnn_layer(inputs, length, hidden_size, dropout, training,
+              bidirectional=True, cell_type='LSTM', reuse=False):
   rnn_cells = {
     'GRU': tf.nn.rnn_cell.GRUCell,
     'LSTM': tf.nn.rnn_cell.BasicLSTMCell,
@@ -84,11 +88,10 @@ class ModelSiameseLSTM(object):
     embed_dim     = params['embed_dim']
     hidden_size   = params['hidden_size']
     dropout       = params['dropout']
-    rnn_dropout   = params['rnn_dropout']
+    rnn_dropout   = 0.1
     learning_rate = 0.0005
     max_norm      = 10
     l2_coef       = 0.0001
-    cell_type     = "LSTM"
     K.set_learning_phase(training)
 
     embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=True)
@@ -97,8 +100,8 @@ class ModelSiameseLSTM(object):
       s2 = tf.nn.embedding_lookup(embedding, s2)
 
     # siamese layers
-    out1 = rnn_layer(s1, len1, hidden_size, rnn_dropout, training, cell_type)
-    out2 = rnn_layer(s2, len2, hidden_size, rnn_dropout, training, cell_type, reuse=True)
+    out1 = rnn_layer(s1, len1, hidden_size, rnn_dropout, training)
+    out2 = rnn_layer(s2, len2, hidden_size, rnn_dropout, training, reuse=True)
 
     out1 = tf.reduce_max(out1, axis=1)
     out2 = tf.reduce_max(out2, axis=1)
@@ -113,19 +116,19 @@ class ModelSiameseLSTM(object):
 
     # matched = Dense(hidden_size*2, activation='relu')(matched)
     # matched = Dropout(dropout)(matched)
-    # matched = BatchNormalization()(matched)
+    # matched = batch_norm(matched, training)
 
     # matched = Dense(hidden_size, activation='relu')(matched)
     # matched = Dropout(dropout)(matched)
-    # matched = BatchNormalization()(matched)
+    # matched = batch_norm(matched, training)
 
     # matched = Dense(hidden_size/2, activation='relu')(matched)
     # matched = Dropout(dropout)(matched)
-    # matched = BatchNormalization()(matched)
+    # matched = batch_norm(matched, training)
 
     # matched = Dense(hidden_size/2, activation='relu')(matched)
     # matched = Dropout(dropout)(matched)
-    # matched = BatchNormalization()(matched)
+    # matched = batch_norm(matched, training)
 
     logits = tf.squeeze(Dense(1)(matched))
 
@@ -148,6 +151,7 @@ class ModelSiameseLSTM(object):
       with tf.control_dependencies(update_ops):
         # Ensures that we execute the update_ops before performing the train_step
         gradients, variables = zip(*optimizer.compute_gradients(self.loss))
+        self.gradients = gradients
         gradients, _ = tf.clip_by_global_norm(gradients, max_norm)
         self.train_op = optimizer.apply_gradients(zip(gradients, variables), 
                                                   global_step=self.global_step)

@@ -6,22 +6,21 @@ from keras.layers import *
 from keras.activations import softmax
 from keras.models import Model
 
-def biRNN(inputs, length, hidden_size, name="biRNN", reuse=False):
-  # rnn_cells = {
-  #   'GRU': tf.nn.rnn_cell.GRUCell,
-  #   'LSTM': tf.nn.rnn_cell.BasicLSTMCell,
-  # }
-  cell = tf.nn.rnn_cell.BasicLSTMCell
+def biRNN(inputs, length, hidden_size, training, dropout_rate=0.1, name="biRNN", reuse=False): 
   with tf.variable_scope(name, reuse=reuse):
-    fw_rnn_cell = cell(hidden_size, name='fw')
-    bw_rnn_cell = cell(hidden_size, name='bw')
+    cell = tf.nn.rnn_cell.BasicLSTMCell
+    fw_cell = cell(hidden_size, name='fw')
+    bw_cell = cell(hidden_size, name='bw')
+    if training:
+      fw_cell = tf.nn.rnn_cell.DropoutWrapper(fw_cell, output_keep_prob=(1 - dropout_rate))
+      bw_cell = tf.nn.rnn_cell.DropoutWrapper(bw_cell, output_keep_prob=(1 - dropout_rate))
     
-    rnn_outputs, _ = tf.nn.bidirectional_dynamic_rnn(fw_rnn_cell,
-                                                      bw_rnn_cell,
-                                                      inputs,
-                                                      sequence_length=length,
-                                                      dtype=tf.float32)
-    output = tf.concat([rnn_outputs[0], rnn_outputs[1]], axis=2)
+    outputs, _ = tf.nn.bidirectional_dynamic_rnn(fw_cell,
+                                                  bw_cell,
+                                                  inputs,
+                                                  sequence_length=length,
+                                                  dtype=tf.float32)
+    output = tf.concat([outputs[0], outputs[1]], axis=2)
   return output
 
 def aggregate(input_1, input_2, num_dense=200, dropout_rate=0.5):
@@ -69,8 +68,8 @@ class ModelESIM(object):
       s2 = tf.nn.dropout(s2, input_keep)
 
     # Encoding
-    q1_encoded = biRNN(s1, len1, hidden_size, "encode")
-    q2_encoded = biRNN(s2, len2, hidden_size, "encode", reuse=True)
+    q1_encoded = biRNN(s1, len1, hidden_size, training, 0.1, "encode")
+    q2_encoded = biRNN(s2, len2, hidden_size, training, 0.1, "encode", reuse=True)
     
     # Alignment
     q1_aligned, q2_aligned = align(q1_encoded, q2_encoded)
@@ -82,8 +81,8 @@ class ModelESIM(object):
     q1_proj = proj(q1_combined, hidden_size, 0.5)
     q2_proj = proj(q2_combined, hidden_size, 0.5)
 
-    q1_compare = biRNN(q1_proj, len1, hidden_size, "compare")
-    q2_compare = biRNN(q2_proj, len2, hidden_size, "compare", reuse=True)
+    q1_compare = biRNN(q1_proj, len1, hidden_size, training, 0.1, "compare")
+    q2_compare = biRNN(q2_proj, len2, hidden_size, training, 0.1, "compare", reuse=True)
     
     # Aggregate
     x = aggregate(q1_compare, q2_compare)

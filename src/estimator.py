@@ -12,6 +12,7 @@ import math
 import argparse
 import numpy as np
 import tensorflow as tf
+from tensorflow.python import debug as tf_debug
 from sklearn.metrics import precision_score, recall_score, accuracy_score
 
 from model_kerasqqp import ModelKerasQQP
@@ -25,10 +26,12 @@ parser.add_argument("--model", help="bimpm, sialstm, siacnn")
 parser.add_argument("--model_name", default="", help="default same as --model")
 parser.add_argument("--mode", default="train_eval", 
                               help="pretrain, train, test, train_eval, debug")
+parser.add_argument('--tfdbg', action='store_true', help="debug estimator")
 parser.add_argument("--eval_minutes", default=5, type=int, help="valid in train_eval mode")
 parser.add_argument('--ccks', action='store_true', help="valid in train_eval mode")
 parser.add_argument("--gpu", default='0', help="")
 parser.add_argument("--epochs", default=20, type=int, help="")
+parser.add_argument("--start_step", default=0, type=int, help="")
 args = parser.parse_args()
 
 # export CUDA_VISIBLE_DEVICES=2
@@ -52,10 +55,10 @@ else:
   raise Exception('model not in %s' % ' '.join(models.keys()))
 
 # files
-if args.model_name == "":
-  args.model_name == args.model
-
-model_dir = "saved_models/model-%s/" % args.model_name
+if args.model_name != "":
+  model_dir = "saved_models/model-%s/" % args.model_name
+else:
+  model_dir = "saved_models/model-%s/" % args.model
 
 out_dir = "process"
 vocab_file = out_dir + "/vocab.txt"
@@ -77,15 +80,25 @@ if args.mode == 'train_eval':
   if args.ccks:
     n_instance += 10*10000
     train_records += ccks_records
+elif args.mode == 'train':
+  n_instance += 39346
+  train_records += atec_records
+  train_records += dev_records
+  if args.ccks:
+    n_instance += 10*10000
+    train_records += ccks_records
 elif args.mode == 'pretrain':
   n_instance += 10*10000
   train_records += ccks_records
 
 BATCH_SIZE = 32
 MAX_STEPS = math.ceil(n_instance * args.epochs / BATCH_SIZE)
+if args.start_step !=0:
+  MAX_STEPS += args.start_step
 LOG_N_ITER = 100
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
+print('max steps: %d' % MAX_STEPS)
 
 
 def get_params():
@@ -185,7 +198,7 @@ def debug_inputs():
   # iter 1344 for train
 
 def debug_model():
-  dataset = test_input_fn()
+  dataset = dev_input_fn()
   iter = dataset.make_one_shot_iterator()
   features, labels = iter.get_next()
 
@@ -196,10 +209,26 @@ def debug_model():
     print(v.name)
 
   with tf.train.MonitoredTrainingSession() as sess:
-    prob, pred, _, loss = sess.run([m.prob, m.pred, m.train_op, m.loss])
-    print(prob)
-    print(pred)
-    print(loss)
+    
+    for gt in m.gradients:
+        print(gt.name)
+        
+    while not sess.should_stop():
+      # _, loss, acc = sess.run([m.train_op, m.loss, m.acc])
+      # print(loss, acc)
+      
+      
+      gs = sess.run(m.gradients)
+      for g, gt in zip(gs, m.gradients):
+        if isinstance(g, np.ndarray):
+          try:
+            print(gt.name, g.shape)
+          except:
+            print(gt.name)
+            exit()
+
+      # loss, acc = sess.run([m.loss, m.acc])
+      # print(loss, acc)
 
 class F1Hook(tf.train.SessionRunHook):
   def __init__(self, pred_tensor, labels_tensor):
@@ -261,12 +290,16 @@ def my_model(features, labels, mode, params):
   # Create training op.
   assert mode == tf.estimator.ModeKeys.TRAIN
 
+  training_hooks = []
   logging_hook = tf.train.LoggingTensorHook({"loss" : m.loss, 
               "accuracy" : m.acc[0]}, 
                every_n_iter=LOG_N_ITER)
+  training_hooks.append(logging_hook)
+  if args.tfdbg:
+    training_hooks.append(tf_debug.LocalCLIDebugHook())
   
   return tf.estimator.EstimatorSpec(mode, loss=m.loss, train_op=m.train_op, 
-                training_hooks = [logging_hook])
+                training_hooks = training_hooks)
 
 def main(_):
   start_time = time.time()
