@@ -34,7 +34,7 @@ def aggregate(input_1, input_2, num_dense=200, dropout_rate=0.5):
     
     x = Dense(num_dense, activation='relu')(x)
     x = Dropout(dropout_rate)(x)
-    return x    
+    return x   
 
 def align(input_1, input_2):
     attention = Dot(axes=-1)([input_1, input_2])
@@ -53,8 +53,7 @@ class ModelESIM(object):
   def __init__(self, params, word2vec, features, labels, training=False):
     len1, len2, s1, s2 = features
     embed_dim     = params['embed_dim']
-    hidden_size   = params['hidden_size'] # 300
-    tune_word   = params['tune_word'] # 300
+    hidden_size   = 200
     input_keep    = 0.8
     learning_rate = 0.0005
     max_norm      = 10
@@ -89,7 +88,7 @@ class ModelESIM(object):
     
     # Aggregate
     x = aggregate(q1_compare, q2_compare)
-    
+        
     logits = tf.squeeze(Dense(1)(x))
 
     self.prob = tf.sigmoid(logits)

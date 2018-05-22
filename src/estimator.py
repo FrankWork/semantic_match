@@ -87,6 +87,10 @@ if args.ccks_joint:
   n_instance += 39346 - 5000
   train_records += atec_records
 
+if not args.ccks_pre and not args.ccks_joint :
+  n_instance += 39346 - 5000
+  train_records += atec_records
+
 if args.train_dev:
   n_instance += 5000
   train_records += dev_records
@@ -98,9 +102,6 @@ if args.start_step !=0:
   MAX_STEPS += args.start_step
 LOG_N_ITER = 100
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
-
-tf.logging.info('max steps: %d' % MAX_STEPS)
-
 
 def get_params():
   return {
@@ -304,6 +305,7 @@ def my_model(features, labels, mode, params):
                 training_hooks = training_hooks)
 
 def main(_):
+  tf.logging.info('max steps: %d' % MAX_STEPS)
   start_time = time.time()
   if args.model == 'debug':
     debug_inputs()
