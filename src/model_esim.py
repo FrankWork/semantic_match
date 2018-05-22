@@ -23,6 +23,8 @@ def biRNN(inputs, length, hidden_size, training, dropout_rate=0.1, name="biRNN",
     output = tf.concat([outputs[0], outputs[1]], axis=2)
   return output
 
+
+
 def aggregate(input_1, input_2, num_dense=200, dropout_rate=0.5):
     feat1 = concatenate([GlobalAvgPool1D()(input_1), GlobalMaxPool1D()(input_1)])
     feat2 = concatenate([GlobalAvgPool1D()(input_2), GlobalMaxPool1D()(input_2)])
@@ -52,6 +54,7 @@ class ModelESIM(object):
     len1, len2, s1, s2 = features
     embed_dim     = params['embed_dim']
     hidden_size   = params['hidden_size'] # 300
+    tune_word   = params['tune_word'] # 300
     input_keep    = 0.8
     learning_rate = 0.0005
     max_norm      = 10
@@ -60,7 +63,7 @@ class ModelESIM(object):
     K.set_learning_phase(training)
     
     with tf.device('/cpu:0'):
-      embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=False)
+      embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=tune_word)
       s1 = tf.nn.embedding_lookup(embedding, s1)
       s2 = tf.nn.embedding_lookup(embedding, s2)
     if training:
@@ -75,8 +78,8 @@ class ModelESIM(object):
     q1_aligned, q2_aligned = align(q1_encoded, q2_encoded)
     
     # Compare
-    q1_combined = concatenate([q1_encoded, q2_aligned, q1_encoded-q2_aligned, q1_encoded, q2_aligned])
-    q2_combined = concatenate([q2_encoded, q1_aligned, q2_encoded-q1_aligned, q2_encoded, q1_aligned])
+    q1_combined = concatenate([q1_encoded, q2_aligned, q1_encoded-q2_aligned, q1_encoded*q2_aligned])
+    q2_combined = concatenate([q2_encoded, q1_aligned, q2_encoded-q1_aligned, q2_encoded*q1_aligned])
 
     q1_proj = proj(q1_combined, hidden_size, 0.5)
     q2_proj = proj(q2_combined, hidden_size, 0.5)

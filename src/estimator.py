@@ -10,6 +10,7 @@ import random
 import time
 import math
 import argparse
+import logging
 import numpy as np
 import tensorflow as tf
 from tensorflow.python import debug as tf_debug
@@ -24,19 +25,17 @@ from model_bimpm import ModelBiMPM
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", help="bimpm, sialstm, siacnn")
 parser.add_argument("--model_name", default="", help="default same as --model")
-parser.add_argument("--mode", default="train_eval", 
-                              help="pretrain, train, test, train_eval, debug")
+parser.add_argument("--mode", default="train", help="pretrain, train, test, debug")
 parser.add_argument('--tfdbg', action='store_true', help="debug estimator")
-parser.add_argument("--eval_minutes", default=5, type=int, help="valid in train_eval mode")
-parser.add_argument('--ccks', action='store_true', help="valid in train_eval mode")
+parser.add_argument('--train_ccks', action='store_true', help="")
+parser.add_argument('--train_dev', action='store_true', help="")
+parser.add_argument('--tune_word', action='store_true', help="")
 parser.add_argument("--gpu", default='0', help="")
 parser.add_argument("--epochs", default=20, type=int, help="")
 parser.add_argument("--start_step", default=0, type=int, help="")
-args = parser.parse_args()
+# parser.add_argument("--eval_minutes", default=5, type=int, help="valid in train_eval mode")
 
-# export CUDA_VISIBLE_DEVICES=2
-# python src/estimator.py --model bimpm
-# python src/estimator.py --model sialstm
+args = parser.parse_args()
 
 # Model class
 models = {
@@ -57,8 +56,10 @@ else:
 # files
 if args.model_name != "":
   model_dir = "saved_models/model-%s/" % args.model_name
+  log_dir = "%s.log" % args.model_name
 else:
   model_dir = "saved_models/model-%s/" % args.model
+  log_dir = "%s.log" % args.model
 
 out_dir = "process"
 vocab_file = out_dir + "/vocab.txt"
@@ -74,20 +75,18 @@ dev_records = [atec_records_basename % ('dev', 0)]
 # runtime hyper parameters
 
 n_instance = 0 # num training instance
-if args.mode == 'train_eval':
+
+if args.mode == 'pretrain':
+  n_instance += 10*10000
+  train_records += ccks_records
+else:
   n_instance += 39346 - 5000
   train_records += atec_records
-  if args.ccks:
-    n_instance += 10*10000
-    train_records += ccks_records
-elif args.mode == 'train':
-  n_instance += 39346
-  train_records += atec_records
+
+if args.train_dev:
+  n_instance += 5000
   train_records += dev_records
-  if args.ccks:
-    n_instance += 10*10000
-    train_records += ccks_records
-elif args.mode == 'pretrain':
+if args.train_ccks:
   n_instance += 10*10000
   train_records += ccks_records
 
@@ -98,7 +97,7 @@ if args.start_step !=0:
 LOG_N_ITER = 100
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
-print('max steps: %d' % MAX_STEPS)
+tf.logging.info('max steps: %d' % MAX_STEPS)
 
 
 def get_params():
@@ -109,6 +108,7 @@ def get_params():
         "dropout": 0.1,
         "rnn_dropout":0.5,
         "max_norm": 5.0,
+        "tune_word": args.tune_word,
         # "num_filters" : 230,
         # "kernel_size" : 3,
         # "num_rels" : 53,
@@ -319,11 +319,11 @@ def main(_):
     if args.mode == "train":
       classifier.train(input_fn=train_input_fn)
       classifier.evaluate(input_fn=dev_input_fn)
-    elif args.mode == "train_eval" or args.mode == "pretrain":
-      train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=MAX_STEPS)
-      eval_spec = tf.estimator.EvalSpec(input_fn=dev_input_fn, 
-                                 steps=None, throttle_secs=60*args.eval_minutes)
-      tf.estimator.train_and_evaluate(classifier, train_spec, eval_spec)
+    # elif args.mode == "train_eval" or args.mode == "pretrain":
+    #   train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=MAX_STEPS)
+    #   eval_spec = tf.estimator.EvalSpec(input_fn=dev_input_fn, 
+    #                              steps=None, throttle_secs=60*args.eval_minutes)
+    #   tf.estimator.train_and_evaluate(classifier, train_spec, eval_spec)
     elif args.mode == "debug":
       debug_model()
     else:
@@ -335,7 +335,7 @@ def main(_):
     
 if __name__=='__main__':
   tf.logging.set_verbosity(tf.logging.INFO)
-  # log = logging.getLogger('tensorflow')
-  # fh = logging.FileHandler('tmp.log')
-  # log.addHandler(fh)
+  log = logging.getLogger('tensorflow')
+  fh = logging.FileHandler(log_dir)
+  log.addHandler(fh)
   tf.app.run()
