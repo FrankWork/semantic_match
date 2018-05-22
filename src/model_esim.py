@@ -63,7 +63,7 @@ class ModelESIM(object):
     K.set_learning_phase(training)
     
     with tf.device('/cpu:0'):
-      embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=tune_word)
+      embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=False)
       s1 = tf.nn.embedding_lookup(embedding, s1)
       s2 = tf.nn.embedding_lookup(embedding, s2)
     if training:

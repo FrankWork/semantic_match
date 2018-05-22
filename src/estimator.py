@@ -25,9 +25,10 @@ from model_bimpm import ModelBiMPM
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", help="bimpm, sialstm, siacnn")
 parser.add_argument("--model_name", default="", help="default same as --model")
-parser.add_argument("--mode", default="train", help="pretrain, train, test, debug")
+parser.add_argument("--mode", default="train", help="train, test, debug")
 parser.add_argument('--tfdbg', action='store_true', help="debug estimator")
-parser.add_argument('--train_ccks', action='store_true', help="")
+parser.add_argument('--ccks_joint', action='store_true', help="")
+parser.add_argument('--ccks_pre', action='store_true', help="")
 parser.add_argument('--train_dev', action='store_true', help="")
 parser.add_argument('--tune_word', action='store_true', help="")
 parser.add_argument("--gpu", default='0', help="")
@@ -76,19 +77,20 @@ dev_records = [atec_records_basename % ('dev', 0)]
 
 n_instance = 0 # num training instance
 
-if args.mode == 'pretrain':
+if args.ccks_pre:
   n_instance += 10*10000
   train_records += ccks_records
-else:
+
+if args.ccks_joint:
+  n_instance += 10*10000
+  train_records += ccks_records
   n_instance += 39346 - 5000
   train_records += atec_records
 
 if args.train_dev:
   n_instance += 5000
   train_records += dev_records
-if args.train_ccks:
-  n_instance += 10*10000
-  train_records += ccks_records
+
 
 BATCH_SIZE = 32
 MAX_STEPS = math.ceil(n_instance * args.epochs / BATCH_SIZE)
@@ -307,13 +309,12 @@ def main(_):
     debug_inputs()
   else:
     params = get_params()
-    # config = tf.ConfigProto()
-    # config.gpu_options.allow_growth=True
-    # session_config: a ConfigProto
+    sess_config = tf.ConfigProto()
+    sess_config.gpu_options.allow_growth=True # pylint: disable 
     classifier = tf.estimator.Estimator(
           model_fn=my_model,
           model_dir=model_dir,
-          # config=tf.estimator.RunConfig(session_config=),
+          config=tf.estimator.RunConfig(session_config=sess_config),
           params=params)
     
     if args.mode == "train":
