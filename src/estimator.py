@@ -21,6 +21,7 @@ from model_sialstm import ModelSiameseLSTM
 from model_siacnn import ModelSiameseCNN
 from model_esim import ModelESIM
 from model_bimpm import ModelBiMPM
+from model_rnet import ModelRNet
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", help="bimpm, sialstm, siacnn")
@@ -44,7 +45,8 @@ models = {
   "sialstm":ModelSiameseLSTM,
   "siacnn":ModelSiameseCNN,
   "esim":ModelESIM,
-  "bimpm":ModelBiMPM
+  "bimpm":ModelBiMPM,
+  "rnet": ModelRNet
 }
 
 if args.model in models :

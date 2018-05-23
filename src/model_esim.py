@@ -4,7 +4,6 @@ import numpy as np
 import numpy as np
 from keras.layers import *
 from keras.activations import softmax
-from keras.models import Model
 
 def biRNN(inputs, length, hidden_size, training, dropout_rate=0.1, name="biRNN", reuse=False): 
   with tf.variable_scope(name, reuse=reuse):
