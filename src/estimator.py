@@ -34,7 +34,7 @@ parser.add_argument('--train_dev', action='store_true', help="")
 parser.add_argument('--tune_word', action='store_true', help="")
 parser.add_argument("--gpu", default='0', help="")
 parser.add_argument("--epochs", default=20, type=int, help="")
-parser.add_argument("--start_step", default=0, type=int, help="")
+parser.add_argument("--batch_size", default=32, type=int, help="")
 # parser.add_argument("--eval_minutes", default=5, type=int, help="valid in train_eval mode")
 
 args = parser.parse_args()
@@ -98,10 +98,8 @@ if args.train_dev:
   train_records += dev_records
 
 
-BATCH_SIZE = 32
+BATCH_SIZE = args.batch_size
 MAX_STEPS = math.ceil(n_instance * args.epochs / BATCH_SIZE)
-if args.start_step !=0:
-  MAX_STEPS += args.start_step
 LOG_N_ITER = 100
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 

@@ -97,7 +97,7 @@ class ModelRNet(object):
     hidden_size   = params['hidden_size']
     dropout       = params['dropout']
     input_keep    = 0.8
-    learning_rate = 0.0005
+    learning_rate = 0.001
     max_norm      = 10
     l2_coef       = 0.0001
     nN = 30797 
@@ -135,9 +135,10 @@ class ModelRNet(object):
     # cq_match = biRNN(cq_self, len2, hidden_size, training, 0.2, "match", reuse=True)
 
     # Aggregate
-    x = aggregate(c_match, q_match)
+    with tf.name_scope('l2_norm'):
+      x = aggregate(c_match, q_match)
 
-    logits = tf.squeeze(Dense(1)(x))
+      logits = tf.squeeze(Dense(1)(x))
 
     self.prob = tf.sigmoid(logits)
     self.pred = tf.rint(self.prob)
@@ -146,7 +147,7 @@ class ModelRNet(object):
     self.loss = tf.reduce_mean(
                   tf.nn.sigmoid_cross_entropy_with_logits(
                                     labels=tf.to_float(labels), logits=logits))
-    l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables()
+    l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables("l2_norm")
                     if 'bias' not in v.name ]) * l2_coef
     self.loss += l2
 
