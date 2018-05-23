@@ -31,9 +31,9 @@ esim       29167     32                 0.762   53    51    52/69      yes   no 
 esim       21467     32     0.86        0.79    51.9  68.3  59/73.1    no    no  no   0.9h
 
 bimpm      19389            0.96        0.794   0.529 0.554 0.541      yes   no  no   0.8714
+rnet       21467     32     81          81      57    52    54.7/71.4  no    no  no
 
-
-BiMPM snli 86.9 quora 88.69
+BirPM snli 86.9 quora 88.69
 ESIM  snli 88.0 
 Datt  snli 86.8
 

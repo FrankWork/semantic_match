@@ -71,7 +71,7 @@ def dot_attention(inputs, memory, mask, hidden, keep_prob=1.0, is_train=None,
           mask = tf.tile(tf.expand_dims(mask, axis=1), [1, JX, 1])
           logits = tf.nn.softmax(softmax_mask(outputs, mask))
           outputs = tf.matmul(logits, memory)
-          res = tf.concat([inputs, outputs], axis=2)
+          res = tf.concat([inputs, outputs, inputs-outputs, inputs*outputs], axis=2)
 
       with tf.variable_scope("gate"):
           dim = res.get_shape().as_list()[-1]
@@ -121,21 +121,21 @@ class ModelRNet(object):
     q_mask = tf.sequence_mask(len2, dtype=tf.float32)
 
     # att
-    qc_att = dot_attention(c_encoded, q_encoded, q_mask, hidden_size, 0.8, training, "att")
-    qc_att = biRNN(qc_att, len1, hidden_size, training, 0.2, "rnn_att")
+    c_att = dot_attention(c_encoded, q_encoded, q_mask, hidden_size, 0.8, training, "att")
+    c_match = biRNN(c_att, len1, hidden_size, training, 0.2, "rnn_att")
     
-    cq_att = dot_attention(q_encoded, c_encoded, c_mask, hidden_size, 0.8, training, "att", reuse=True)
-    cq_att = biRNN(cq_att, len2, hidden_size, training, 0.2, "rnn_att", reuse=True)
+    q_att = dot_attention(q_encoded, c_encoded, c_mask, hidden_size, 0.8, training, "att", reuse=True)
+    q_match = biRNN(q_att, len2, hidden_size, training, 0.2, "rnn_att", reuse=True)
 
-    # match
-    qc_self = dot_attention(qc_att, qc_att, c_mask, hidden_size, 0.8, training, "self")
-    qc_match = biRNN(qc_self, len1, hidden_size, training, 0.2, "match")
+    # # match
+    # qc_self = dot_attention(qc_att, qc_att, c_mask, hidden_size, 0.8, training, "self")
+    # qc_match = biRNN(qc_self, len1, hidden_size, training, 0.2, "match")
 
-    cq_self = dot_attention(cq_att, cq_att, q_mask, hidden_size, 0.8, training, "self", reuse=True)
-    cq_match = biRNN(cq_self, len2, hidden_size, training, 0.2, "match", reuse=True)
+    # cq_self = dot_attention(cq_att, cq_att, q_mask, hidden_size, 0.8, training, "self", reuse=True)
+    # cq_match = biRNN(cq_self, len2, hidden_size, training, 0.2, "match", reuse=True)
 
     # Aggregate
-    x = aggregate(qc_match, cq_match)
+    x = aggregate(c_match, q_match)
 
     logits = tf.squeeze(Dense(1)(x))
 
