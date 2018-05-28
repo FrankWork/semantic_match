@@ -36,7 +36,7 @@ with codecs.open(vocab_freq_file, 'r', 'utf8') as f:
     parts = line.strip().split()
     if len(parts) != 2:
       continue
-    tok, freq = parts[0], parts[1]
+    tok, freq = parts[0], int(parts[1])
     if freq > min_freq:
       vocab_freq[tok] = freq
 print('load total %d tokens' % len(vocab_freq))

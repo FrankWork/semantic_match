@@ -8,8 +8,10 @@ import jieba
 import codecs
 import os
 import re
+import time
 
-orig_atec_train = "data/atec/atec_nlp_sim_train.csv"
+orig_atec_train_list = ["data/atec/atec_nlp_sim_train.csv",
+                        "data/atec/atec_nlp_sim_train_add.csv"]
 out_dir = "process"
 atec_train = out_dir + "/atec_train.tokenized"
 
@@ -43,24 +45,29 @@ def clean_str(string):
   return string
 
 vocab_freq = {}
+t_begin = time.time()
+
+# atec
 f_out = codecs.open(atec_train, 'w', 'utf8')
-with codecs.open(orig_atec_train, 'r', 'utf8') as f:
-  for i, line in enumerate(f):
-    if i!=0 and i%10000 == 0:
-      print(i)
-    parts = line.strip().lower().split('\t')
-    s1, s2, label =parts[1],parts[2],parts[3]
-    s1 = clean_str(s1)
-    s2 = clean_str(s2)
-    s1_toks = [w for w in jieba.cut(s1, HMM=False) if w and w!=' ']
-    s2_toks = [w for w in jieba.cut(s2, HMM=False) if w and w!=' ']
-    f_out.write("%s\t%s\t%s\n" % (" ".join(s1_toks), " ".join(s2_toks), label))
-    for tok in s1_toks + s2_toks:
-      if tok not in vocab_freq:
-        vocab_freq[tok]=0
-      vocab_freq[tok]+=1
+for orig_atec_train in orig_atec_train_list:
+  with codecs.open(orig_atec_train, 'r', 'utf8') as f:
+    for i, line in enumerate(f):
+      if i!=0 and i%10000 == 0:
+        print(i)
+      parts = line.strip().lower().split('\t')
+      s1, s2, label =parts[1],parts[2],parts[3]
+      s1 = clean_str(s1)
+      s2 = clean_str(s2)
+      s1_toks = [w for w in jieba.cut(s1, HMM=False) if w and w!=' ']
+      s2_toks = [w for w in jieba.cut(s2, HMM=False) if w and w!=' ']
+      f_out.write("%s\t%s\t%s\n" % (" ".join(s1_toks), " ".join(s2_toks), label))
+      for tok in s1_toks + s2_toks:
+        if tok not in vocab_freq:
+          vocab_freq[tok]=0
+        vocab_freq[tok]+=1
 f_out.close()
 
+# ccks
 f_out = codecs.open(ccks_train, 'w', 'utf8')
 with codecs.open(orig_ccks_train, 'r', 'utf8') as f:
   for i, line in enumerate(f):
@@ -86,4 +93,7 @@ with codecs.open(vocab_freq_file, 'w', 'utf8') as f_out:
   for k,v in vocab_freq:
     f_out.write("%s\t%d\n" %(k,v))
 
+
+t_total = time.time() - t_begin
+print('time %d secs' % t_total)
     

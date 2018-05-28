@@ -100,8 +100,8 @@ class ModelRNet(object):
     learning_rate = 0.001
     max_norm      = 10
     l2_coef       = 0.0001
-    nN = 30797 
-    nP = 8549
+    # nN = 30797 
+    # nP = 8549
 
     K.set_learning_phase(training)
 

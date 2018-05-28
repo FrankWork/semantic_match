@@ -34,7 +34,7 @@ parser.add_argument('--train_dev', action='store_true', help="")
 parser.add_argument('--tune_word', action='store_true', help="")
 parser.add_argument("--gpu", default='0', help="")
 parser.add_argument("--epochs", default=20, type=int, help="")
-parser.add_argument("--batch_size", default=32, type=int, help="")
+parser.add_argument("--batch_size", default=100, type=int, help="")
 # parser.add_argument("--eval_minutes", default=5, type=int, help="valid in train_eval mode")
 
 args = parser.parse_args()
@@ -70,7 +70,7 @@ embed_file = out_dir + "/embed.npy"
 
 atec_records_basename = out_dir+'/atec_%s.%d.tfrecords'
 ccks_records_basename = out_dir+'/ccks_%s.%d.tfrecords'
-atec_records = [atec_records_basename % ('train', i) for i in range(4)]
+atec_records = [atec_records_basename % ('train', i) for i in range(10)]
 ccks_records = [ccks_records_basename % ('train', i) for i in range(10)]
 train_records = []
 dev_records = [atec_records_basename % ('dev', 0)]
@@ -86,15 +86,15 @@ if args.ccks_pre:
 if args.ccks_joint:
   n_instance += 10*10000
   train_records += ccks_records
-  n_instance += 39346 - 5000
+  n_instance += 102477 - 10000
   train_records += atec_records
 
 if not args.ccks_pre and not args.ccks_joint :
-  n_instance += 39346 - 5000
+  n_instance += 102477 - 10000
   train_records += atec_records
 
 if args.train_dev:
-  n_instance += 5000
+  n_instance += 10000
   train_records += dev_records
 
 

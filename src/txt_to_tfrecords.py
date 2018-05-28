@@ -22,7 +22,7 @@ ccks_train = out_dir + "/ccks_train.tokenized"
 atec_records_basename = out_dir+'/atec_%s.%d.tfrecords'
 ccks_records_basename = out_dir+'/ccks_%s.%d.tfrecords'
 
-NUM_DEV = 5000
+NUM_DEV = 10000
 MAX_INSTANCE = 10000
 
 vocab_idx = {}
