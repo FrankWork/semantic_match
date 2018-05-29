@@ -11,8 +11,7 @@ import random
 import time
 import numpy as np
 import tensorflow as tf
-from model_bimpm import ModelBiMPM
-
+from model_esim import ModelESIM as Model
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--infile", help="")
@@ -103,7 +102,7 @@ def my_model(features, labels, mode, params):
   word_embed = np.load(embed_file)
 
   training = mode == tf.estimator.ModeKeys.TRAIN
-  m = ModelBiMPM(params, word_embed, features, labels, training)
+  m = Model(params, word_embed, features, labels, training)
   
   # Compute evaluation metrics.
   metrics = {'accuracy': m.acc}

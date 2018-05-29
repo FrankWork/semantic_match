@@ -99,7 +99,7 @@ class ModelRNet(object):
     input_keep    = 0.8
     learning_rate = 0.001
     max_norm      = 10
-    l2_coef       = 0.0001
+    l2_coef       = 1e-5 #0.0001
     # nN = 30797 
     # nP = 8549
 
@@ -147,7 +147,9 @@ class ModelRNet(object):
     self.loss = tf.reduce_mean(
                   tf.nn.sigmoid_cross_entropy_with_logits(
                                     labels=tf.to_float(labels), logits=logits))
-    l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables("l2_norm")
+    # l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables("l2_norm")
+    #                 if 'bias' not in v.name ]) * l2_coef
+    l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables()
                     if 'bias' not in v.name ]) * l2_coef
     self.loss += l2
 

@@ -7,4 +7,5 @@ tmp*
 src-eval.tar.gz
 src-eval/embed.npy
 src-eval/model-bimpm/
+src-eval/model-esim/
 saved_models/
