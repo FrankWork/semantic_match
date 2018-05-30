@@ -40,4 +40,13 @@ Datt  snli 86.8
 model epoch batch train  test  p    r    f1      tune_w  bn  l2     ccks
 rnet  20    100   89     81.9  49.7 55.4 52.4/70.7  no   no  dense   no    1.17h
 rnet  20    100   86     81.5  48.8 57.6 52.9/70.9  no   no  all     no    1.14h   59.98
-esim  20    100   87     80.8  47.6 61.7 53.7/71.3  no   no  all     no    0.89h   
+esim  20    100   87     80.8  47.6 61.7 53.7/71.3  no   no  all     no    0.89h   61.84
+bimpm 20    100   85     81.1  47.9 55   51.2/69.9  yes  no  all     no    1.10h   
+bimpm 20    100   87     80    45.7 58.4 51.3/69.7  no   no  all     no    1.04h   
+
+
+
+# features
+
+同义词 反义词 上位词 下位词
+Universal Sentence Encoder

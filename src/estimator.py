@@ -22,6 +22,7 @@ from model_siacnn import ModelSiameseCNN
 from model_esim import ModelESIM
 from model_bimpm import ModelBiMPM
 from model_rnet import ModelRNet
+from model_qanet import ModelQANet
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", help="bimpm, sialstm, siacnn")
@@ -46,7 +47,8 @@ models = {
   "siacnn":ModelSiameseCNN,
   "esim":ModelESIM,
   "bimpm":ModelBiMPM,
-  "rnet": ModelRNet
+  "rnet": ModelRNet,
+  "qanet": ModelQANet
 }
 
 if args.model in models :
@@ -212,23 +214,26 @@ def debug_model():
     print(v.name)
 
   with tf.train.MonitoredTrainingSession() as sess:
+
+    for t in sess.run(m.tensors):
+      print(t.shape)
     
-    for gt in m.gradients:
-        print(gt.name)
+    # for gt in m.gradients:
+    #     print(gt.name)
         
-    while not sess.should_stop():
-      # _, loss, acc = sess.run([m.train_op, m.loss, m.acc])
-      # print(loss, acc)
+    # while not sess.should_stop():
+    #   # _, loss, acc = sess.run([m.train_op, m.loss, m.acc])
+    #   # print(loss, acc)
       
       
-      gs = sess.run(m.gradients)
-      for g, gt in zip(gs, m.gradients):
-        if isinstance(g, np.ndarray):
-          try:
-            print(gt.name, g.shape)
-          except:
-            print(gt.name)
-            exit()
+    #   gs = sess.run(m.gradients)
+    #   for g, gt in zip(gs, m.gradients):
+    #     if isinstance(g, np.ndarray):
+    #       try:
+    #         print(gt.name, g.shape)
+    #       except:
+    #         print(gt.name)
+    #         exit()
 
       # loss, acc = sess.run([m.loss, m.acc])
       # print(loss, acc)
