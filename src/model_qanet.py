@@ -652,10 +652,10 @@ def total_params():
     print("Total number of trainable parameters: {}".format(total_parameters))
 
 def aggregate(input_1, input_2, num_dense=256, dropout_rate=0.5):
-    feat1 = concatenate([GlobalAvgPool1D()(input_1), GlobalMaxPool1D()(input_1)])
-    feat2 = concatenate([GlobalAvgPool1D()(input_2), GlobalMaxPool1D()(input_2)])
+    p = concatenate([GlobalAvgPool1D()(input_1), GlobalMaxPool1D()(input_1)])
+    q = concatenate([GlobalAvgPool1D()(input_2), GlobalMaxPool1D()(input_2)])
 
-    x = concatenate([feat1, feat2])
+    x = concatenate([p, q, p*q, tf.abs(p-q)])
     x = Dropout(dropout_rate)(x)
     
     x = Dense(num_dense, activation='relu')(x)
@@ -671,7 +671,7 @@ class ModelQANet(object):
     input_keep    = 0.8
     learning_rate = 0.001
     max_norm      = 10
-    l2_coef       = 1e-6 #0.0001
+    l2_coef       = 1e-5 #0.0001
     num_heads     = 8
     
 
@@ -719,11 +719,13 @@ class ModelQANet(object):
     S_T = tf.transpose(tf.nn.softmax(mask_logits(S, mask = mask_c), axis = 1),[0,2,1])
     q_att = tf.matmul(S_T, c)      # same length as q
 
-    c_att2 = tf.matmul(S_, q_att)  # same length as c
-    q_att2 = tf.matmul(S_T, c_att) # same length as q
+    # c_att2 = tf.matmul(S_, q_att)  # same length as c
+    # q_att2 = tf.matmul(S_T, c_att) # same length as q
 
-    c_comb = tf.concat([c, c_att, c*c_att, c_att2, c*c_att2], axis=-1)
-    q_comb = tf.concat([q, q_att, q*q_att, q_att2, q*q_att2], axis=-1)
+    # c_comb = tf.concat([c, c_att, c*c_att, c_att2, c*c_att2], axis=-1)
+    # q_comb = tf.concat([q, q_att, q*q_att, q_att2, q*q_att2], axis=-1)
+    c_comb = tf.concat([c, c_att, c*c_att, tf.abs(c-c_att)], axis=-1)
+    q_comb = tf.concat([q, q_att, q*q_att, tf.abs(q-q_att)], axis=-1)
     
     # match
     c_proj = conv(c_comb, hidden_size, name="proj")
@@ -732,19 +734,19 @@ class ModelQANet(object):
     c_proj = tf.nn.dropout(c_proj, 1.0-dropout)
     q_proj = tf.nn.dropout(q_proj, 1.0-dropout)
 
-    c_match = residual_block(c_proj, num_blocks = 7, num_conv_layers = 2,
+    c_match = residual_block(c_proj, num_blocks = 1, num_conv_layers = 2,
                 kernel_size = 5, mask = c_mask, num_filters = hidden_size,
                 num_heads = num_heads, seq_len = len1, scope = "match",
                 bias = False, reuse = False, dropout = dropout)
-    q_match = residual_block(q_proj, num_blocks = 7, num_conv_layers = 2,
+    q_match = residual_block(q_proj, num_blocks = 1, num_conv_layers = 2,
                 kernel_size = 5, mask = q_mask, num_filters = hidden_size,
                 num_heads = num_heads, seq_len = len2, scope = "match",
                 bias = False, reuse = True, dropout = dropout)
 
     # Aggregate
-    x = aggregate(c_match, q_match)
-
-    logits = tf.squeeze(Dense(1)(x))
+    with tf.name_scope('l2_norm'):
+      x = aggregate(c_match, q_match)
+      logits = tf.squeeze(Dense(1)(x))
 
     self.prob = tf.sigmoid(logits)
     self.pred = tf.rint(self.prob)
@@ -753,11 +755,14 @@ class ModelQANet(object):
     self.loss = tf.reduce_mean(
                   tf.nn.sigmoid_cross_entropy_with_logits(
                                     labels=tf.to_float(labels), logits=logits))
-    # l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables("l2_norm")
-    #                 if 'bias' not in v.name ]) * l2_coef
-    l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables()
+    l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables("l2_norm")
                     if 'bias' not in v.name ]) * l2_coef
+    # l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables()
+    #                 if 'bias' not in v.name ]) * l2_coef
     self.loss += l2
+    variables = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+    l2_loss = tf.contrib.layers.apply_regularization(regularizer, variables)
+    self.loss += l2_loss
 
     # decay
     var_ema = tf.train.ExponentialMovingAverage(0.9999)
