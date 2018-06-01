@@ -769,12 +769,6 @@ class ModelQANet(object):
     ema_op = var_ema.apply(tf.trainable_variables())
     with tf.control_dependencies([ema_op]):
       self.loss = tf.identity(self.loss)
-    #   self.assign_vars = []
-    #   for var in tf.global_variables():
-    #     v = self.var_ema.average(var)
-    #     if v:
-    #       self.assign_vars.append(tf.assign(var,v))
-
 
     if training:
       self.global_step = tf.train.get_or_create_global_step()

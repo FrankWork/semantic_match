@@ -31,9 +31,16 @@ esim       21467     32     0.86        0.79    51.9  68.3  59/73.1    no    no 
 bimpm      19389            0.96        0.794   0.529 0.554 0.541      yes   no  no   0.8714
 rnet       6870      100     81         81      57    52    54.7/71.4  no    no  no   0.9154
 
-BiMPM snli 86.9 quora 88.69
-ESIM  snli 88.0 
-Datt  snli 86.8
+
+model       snli     quora
+BiMPM       86.9     88.69
+ESIM        88.0 
+Datt        86.8
+DR-BiLSTM   88.5
+DIIN        88.0
+KIM         88.6
+CAFE        88.5
+DRCN        88.9
 
 ## B
 
@@ -41,9 +48,26 @@ model epoch batch train  test  p    r    f1      tune_w  bn  l2     ccks
 rnet  20    100   89     81.9  49.7 55.4 52.4/70.7  no   no  dense   no    1.17h
 rnet  20    100   86     81.5  48.8 57.6 52.9/70.9  no   no  all     no    1.14h   59.98
 esim  20    100   87     80.8  47.6 61.7 53.7/71.3  no   no  all     no    0.89h   61.84
+esim  20    100   86.4   81    48   63.9 54.8/71.9  no   no  all     no    sent vec abs(-) * 
+esim ema
+esim lr decay
+esim highway proj
+esim focal loss
+
 bimpm 20    100   85     81.1  47.9 55   51.2/69.9  yes  no  all     no    1.10h   
 bimpm 20    100   87     80    45.7 58.4 51.3/69.7  no   no  all     no    1.04h   
-qanet 20    100   82     82    51.2 57.4 54.1/71.7  no   no  all     no    0.47h 
+qanet 20    100   82     82    51.2 57.4 54.1/71.7  no   no  all     no    0.47h   60.89 **lr decay** no fitting
+qanet 20    100   81     82.5  51.3 53.1 52.2/70.7  no   no  all     no           no ema
+
+# todo
+
+- A Structured Self-Attentive Sentence Embedding
+- focal loss
+- stacking
+- easy, hard
+
+ontology, BabelNet
+intent
 
 
 # features
@@ -55,9 +79,18 @@ Universal Sentence Encoder
 SimHash
 LDA/LSA
 BLUE, 共同单词
+pointwise mutual information PMI
 
 
-https://www.zhihu.com/question/49424474
+# url
+
+短文本相似度计算 https://www.zhihu.com/question/49424474
+深度语义模型    https://zhuanlan.zhihu.com/p/33537217
 http://www.sohu.com/a/222501203_717210
 https://www.kaggle.com/c/quora-question-pairs/discussion/34325
+https://www.kaggle.com/c/multinli-matched-evaluation/leaderboard
 
+# 分词
+
+还款期 数
+【 】
