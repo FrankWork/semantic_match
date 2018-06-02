@@ -48,11 +48,10 @@ model epoch batch train  test  p    r    f1      tune_w  bn  l2     ccks
 rnet  20    100   89     81.9  49.7 55.4 52.4/70.7  no   no  dense   no    1.17h
 rnet  20    100   86     81.5  48.8 57.6 52.9/70.9  no   no  all     no    1.14h   59.98
 esim  20    100   87     80.8  47.6 61.7 53.7/71.3  no   no  all     no    0.89h   61.84
-esim  20    100   86.4   81    48   63.9 54.8/71.9  no   no  all     no    sent vec abs(-) * 
-esim ema
-esim lr decay
-esim highway proj
-esim focal loss
+esim  20    100   86.4   81    48   63.9 54.8/71.9  no   no  all     no                  sent vec abs(-) * 
+esim  20    100   85     81.7  49.4 62.9 55.3/72.3  no   no  all     no            63.12 lr decay + highway
+esim ema        52.8/70.7
+esim focal loss 53.0/71
 
 bimpm 20    100   85     81.1  47.9 55   51.2/69.9  yes  no  all     no    1.10h   
 bimpm 20    100   87     80    45.7 58.4 51.3/69.7  no   no  all     no    1.04h   
@@ -62,7 +61,6 @@ qanet 20    100   81     82.5  51.3 53.1 52.2/70.7  no   no  all     no         
 # todo
 
 - A Structured Self-Attentive Sentence Embedding
-- focal loss
 - stacking
 - easy, hard
 
