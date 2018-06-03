@@ -41,6 +41,7 @@ DIIN        88.0
 KIM         88.6
 CAFE        88.5
 DRCN        88.9
+DMAN        88.8 
 
 ## B
 
