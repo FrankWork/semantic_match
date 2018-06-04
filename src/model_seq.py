@@ -198,9 +198,34 @@ def seq2seq(src, src_len, tgt, tgt_len, labels, hidden_size,
   loss1 = seq_loss(logits1, labels, tgt_len)
   return src_out, src_state, loss1
 
+def add_noise(x):
+  def fn(s): 
+    n = tf.size(s)
+    # mask padding
+    mask = s > 0
+    s = tf.boolean_mask(s, mask)
+
+    # drop words
+    mask = tf.random_uniform(s.shape) > 0.1
+    mask_s = tf.boolean_mask(s, mask)
+    m = tf.size(mask_s)
+
+    # shuffle words within range
+    orig_idx = tf.cast( tf.range(m),  tf.float32)
+    offset = 3*tf.random_uniform(mask_s.shape)
+    _, indices = tf.nn.top_k(orig_idx+offset, m)
+    indices = tf.reverse(indices, axis=[0])
+    mask_s = tf.gather(mask_s, indices)
+
+    return tf.pad(mask_s, [[0, n-m]], "CONSTANT")
+
+  y = tf.map_fn(fn, x, x.dtype)
+  y_len = tf.reduce_sum(tf.cast(y>0, tf.int32), axis=-1)
+  return y, y_len
+
 class ModelSeq(object):
   def __init__(self, params, word2vec, features, labels, training=False):
-    len1, len2, s1, s2 = features
+    len1, len2, sent1, sent2 = features
     embed_dim     = params['embed_dim']
     hidden_size   = 200
     input_keep    = 0.8
@@ -209,21 +234,50 @@ class ModelSeq(object):
     l2_coef       = 1e-5
 
     K.set_learning_phase(training)
-    
-    with tf.device('/cpu:0'):
-      embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=False)
-      q1 = tf.nn.embedding_lookup(embedding, s1)
-      q2 = tf.nn.embedding_lookup(embedding, s2)
-    if training:
-      q1 = tf.nn.dropout(q1, input_keep)
-      q2 = tf.nn.dropout(q2, input_keep)
-
-    q1 = highway(q1, embed_dim, 'highway_in', training)
-    q2 = highway(q2, embed_dim, 'highway_in', training, reuse=True)
+    embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=False)
 
     #=======================
     # Seq Model
     #=======================
+    max_len1 = tf.reduce_max(len1)
+    max_len2 = tf.reduce_max(len2)
+    max_len  = tf.maximum(max_len1, max_len2)
+
+    s1 = tf.identity(sent1)
+    s2 = tf.identity(sent2)
+
+    s1 = tf.pad(s1, [[0, 0], [0, max_len-max_len1]])
+    s2 = tf.pad(s2, [[0, 0], [0, max_len-max_len2]])
+
+    s1_noise, len1_noise = add_noise(s1)
+    s2_noise, len2_noise = add_noise(s2)
+
+    trans = labels == 1 # translate or autoencoder
+
+    src1 = tf.where(trans, s1, s1_noise)
+    tgt1 = tf.where(trans, s2, s1)
+    label1 = tf.identity(tgt1)
+
+    src2 = tf.where(trans, s2, s2_noise)
+    tgt2 = tf.where(trans, s1, s2)
+    label2 = tf.identity(tgt2)
+
+    with tf.device('/cpu:0'):
+      src1 = tf.nn.embedding_lookup(embedding, src1)
+      src2 = tf.nn.embedding_lookup(embedding, src2)
+      tgt1 = tf.nn.embedding_lookup(embedding, tgt1)
+      tgt2 = tf.nn.embedding_lookup(embedding, tgt2)
+    if training:
+      src1 = tf.nn.dropout(src1, input_keep)
+      src2 = tf.nn.dropout(src2, input_keep)
+      tgt1 = tf.nn.dropout(tgt1, input_keep)
+      tgt2 = tf.nn.dropout(tgt2, input_keep)
+
+    src1 = highway(src1, embed_dim, 'highway_in_seq', training)
+    src2 = highway(src2, embed_dim, 'highway_in_seq', training, reuse=True)
+    tgt1 = highway(tgt1, embed_dim, 'highway_in_seq', training, reuse=True)
+    tgt2 = highway(tgt2, embed_dim, 'highway_in_seq', training, reuse=True)
+
     out1, state1, loss1 = seq2seq(q1, len1, q2, len2, s2, 
                                         hidden_size, training, 0.1, reuse=False)
     out2, state2, loss2 = seq2seq(q2, len2, q1, len1, s1, 
@@ -232,9 +286,19 @@ class ModelSeq(object):
     #=======================
     # ESIM Model
     #=======================
+    with tf.device('/cpu:0'):
+      q1 = tf.nn.embedding_lookup(embedding, sent1)
+      q2 = tf.nn.embedding_lookup(embedding, sent2)
+    if training:
+      q1 = tf.nn.dropout(q1, input_keep)
+      q2 = tf.nn.dropout(q2, input_keep)
+
+    q1 = highway(q1, embed_dim, 'highway_in', training)
+    q2 = highway(q2, embed_dim, 'highway_in', training, reuse=True)
+
     # Encoding
-    q1_encoded, _ = biRNN(s1, len1, hidden_size, training, 0.1, "encode")
-    q2_encoded, _ = biRNN(s2, len2, hidden_size, training, 0.1, "encode", reuse=True)
+    q1_encoded, _ = biRNN(q1, len1, hidden_size, training, 0.1, "encode")
+    q2_encoded, _ = biRNN(q2, len2, hidden_size, training, 0.1, "encode", reuse=True)
     
     # Alignment
     q1_aligned, q2_aligned = align(q1_encoded, q2_encoded)
