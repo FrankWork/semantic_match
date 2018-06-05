@@ -52,6 +52,7 @@ esim  20    100   87     80.8  47.6 61.7 53.7/71.3  no   no  all     no    0.89h
 esim  20    100   86.4   81    48   63.9 54.8/71.9  no   no  all     no                  sent vec abs(-) * 
 esim  20    100   85     81.7  49.4 62.9 55.3/72.3  no   no  all     no            63.12 lr decay + highway
 esim  20    100   85     78.3  43.8 72.4 54.6/72    no   no  all     no    3.26h         translate
+esim                                     55.0/72.1                         3.76h
 esim ema        52.8/70.7
 esim focal loss 53.0/71
 
