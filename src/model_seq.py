@@ -47,7 +47,7 @@ def highway(x, units, scope, training, reuse=False):
       y = tf.nn.dropout(y, 0.8)
     return y
 
-def aggregate(input_1, input_2, units, training, dropout_rate=0.5):
+def aggregate(input_1, input_2, state1, state2, units, training, dropout_rate=0.5):
     p = tf.concat([tf.reduce_mean(input_1, axis=1), 
                    tf.reduce_max(input_1, axis=1)],
                    axis=-1)
@@ -55,7 +55,7 @@ def aggregate(input_1, input_2, units, training, dropout_rate=0.5):
                    tf.reduce_max(input_2, axis=1)], 
                    axis=-1)
 
-    x = tf.concat([p, q, tf.abs(p-q), p*q], axis=-1)
+    x = tf.concat([p, q, tf.abs(p-q), p*q, state1, state2], axis=-1)
 
     if training:
       x = tf.nn.dropout(x, 1-dropout_rate)
@@ -165,7 +165,11 @@ def decode(encoder_outputs, encoder_state, src_len, targets, tgt_len,
     # Helper
     helper = tf.contrib.seq2seq.TrainingHelper(targets, tgt_len,)
     # Decoder
-    my_decoder = tf.contrib.seq2seq.BasicDecoder(decode_cell, helper, encoder_state,)
+    cell_state = tf.nn.rnn_cell.LSTMStateTuple(encoder_state[0].c + encoder_state[1].c, 
+                                               encoder_state[0].h + encoder_state[1].h)
+    batch_size = tf.size(tgt_len)
+    initial_state = decode_cell.zero_state(batch_size, targets.dtype).clone(cell_state=cell_state)
+    my_decoder = tf.contrib.seq2seq.BasicDecoder(decode_cell, helper, initial_state,)
 
     # Dynamic decoding
     outputs, final_context_state, _ = tf.contrib.seq2seq.dynamic_decode(
@@ -178,10 +182,21 @@ def decode(encoder_outputs, encoder_state, src_len, targets, tgt_len,
 
   return logits, sample_id, final_context_state
 
-def seq_loss(logits, targets, length):
+# global_tensors = []
+
+def seq_loss(logits, labels, length):
+    # global_tensors.extend([logits, labels, length])
+    label_maxlen = tf.shape(labels)[1]
+    logit_maxlen = tf.reduce_max(length)
+    # global_tensors.extend([label_maxlen, logit_maxlen])
+
+    paddings = tf.convert_to_tensor([[0, 0], [0, label_maxlen-logit_maxlen], [0, 0]])
+    logits = tf.pad(logits, paddings)
+
     crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(
-                                labels=targets, logits=logits)
-    target_weights = tf.sequence_mask(length, dtype=logits.dtype)
+                                labels=labels, logits=logits)
+    
+    target_weights = tf.sequence_mask(length, maxlen=label_maxlen, dtype=logits.dtype)
     batch_size = tf.size(length)
 
     loss = tf.reduce_sum(
@@ -192,11 +207,11 @@ def seq2seq(src, src_len, tgt, tgt_len, labels, hidden_size,
                           training, dropout=0.1, reuse=False, vocab_size=5924):
   src_out, src_state = biRNN(src, src_len, hidden_size, training, dropout, 
                              "encode_seq", reuse=reuse)
-  logits1, _, _ = decode(src_out, src_state, src_len, tgt, tgt_len, 
+  logits, _, _ = decode(src_out, src_state, src_len, tgt, tgt_len, 
                           hidden_size, vocab_size, training, 0.1, 
                           "decode_seq", reuse)
-  loss1 = seq_loss(logits1, labels, tgt_len)
-  return src_out, src_state, loss1
+  loss = seq_loss(logits, labels, tgt_len)
+  return src_out, src_state, loss
 
 def add_noise(x):
   def fn(s): 
@@ -206,13 +221,15 @@ def add_noise(x):
     s = tf.boolean_mask(s, mask)
 
     # drop words
-    mask = tf.random_uniform(s.shape) > 0.1
+    mask = tf.random_uniform(tf.shape(s)) > 0.1
     mask_s = tf.boolean_mask(s, mask)
+    mask_s = tf.cond(tf.reduce_sum(tf.to_int32(mask)) > 0, 
+                    lambda: mask_s, lambda: s) # to avoid dropping all words
     m = tf.size(mask_s)
 
     # shuffle words within range
     orig_idx = tf.cast( tf.range(m),  tf.float32)
-    offset = 3*tf.random_uniform(mask_s.shape)
+    offset = 3*tf.random_uniform(tf.shape(mask_s))
     _, indices = tf.nn.top_k(orig_idx+offset, m)
     indices = tf.reverse(indices, axis=[0])
     mask_s = tf.gather(mask_s, indices)
@@ -226,6 +243,10 @@ def add_noise(x):
 class ModelSeq(object):
   def __init__(self, params, word2vec, features, labels, training=False):
     len1, len2, sent1, sent2 = features
+    len1 = tf.cast(len1, tf.int32)
+    len2 = tf.cast(len2, tf.int32)
+    self.tensors = []
+
     embed_dim     = params['embed_dim']
     hidden_size   = 200
     input_keep    = 0.8
@@ -246,21 +267,39 @@ class ModelSeq(object):
     s1 = tf.identity(sent1)
     s2 = tf.identity(sent2)
 
-    s1 = tf.pad(s1, [[0, 0], [0, max_len-max_len1]])
-    s2 = tf.pad(s2, [[0, 0], [0, max_len-max_len2]])
+    paddings1 = tf.convert_to_tensor([[0, 0], [0, max_len-max_len1]])
+    paddings2 = tf.convert_to_tensor([[0, 0], [0, max_len-max_len2]])
+    s1 = tf.pad(s1, paddings1)
+    s2 = tf.pad(s2, paddings2)
 
     s1_noise, len1_noise = add_noise(s1)
     s2_noise, len2_noise = add_noise(s2)
 
     trans = labels == 1 # translate or autoencoder
 
-    src1 = tf.where(trans, s1, s1_noise)
-    tgt1 = tf.where(trans, s2, s1)
-    label1 = tf.identity(tgt1)
+    if training:
+      src1     = tf.where(trans, s1,   s1_noise,   "src1")
+      src1_len = tf.where(trans, len1, len1_noise, "src1_len")
+      src2     = tf.where(trans, s2,   s2_noise,   "src2")
+      src2_len = tf.where(trans, len2, len2_noise, "src2_len")
+    else:
+      src1     = s1
+      src1_len = len1
+      src2     = s2
+      src2_len = len2
 
-    src2 = tf.where(trans, s2, s2_noise)
-    tgt2 = tf.where(trans, s1, s2)
-    label2 = tf.identity(tgt2)
+    tgt1     = tf.where(trans, s2,   s1,   "tgt1")
+    tgt1_len = tf.where(trans, len2, len1, "tgt1_len")
+    label1   = tf.identity(tgt1, "label1")
+
+    tgt2     = tf.where(trans, s1,   s2,   "tgt2")
+    tgt2_len = tf.where(trans, len1, len2, "tgt2_len")
+    label2   = tf.identity(tgt2, "label2")
+
+    # self.tensors = [src1_len, src2_len]
+    # self.tensors = [tf.assert_greater(src1_len, 0), 
+    #                 tf.assert_greater(src2_len,  0), 
+    #                 ]
 
     with tf.device('/cpu:0'):
       src1 = tf.nn.embedding_lookup(embedding, src1)
@@ -278,10 +317,13 @@ class ModelSeq(object):
     tgt1 = highway(tgt1, embed_dim, 'highway_in_seq', training, reuse=True)
     tgt2 = highway(tgt2, embed_dim, 'highway_in_seq', training, reuse=True)
 
-    out1, state1, loss1 = seq2seq(q1, len1, q2, len2, s2, 
+    out1, state1, loss1 = seq2seq(src1, src1_len, tgt1, tgt1_len, label1, 
                                         hidden_size, training, 0.1, reuse=False)
-    out2, state2, loss2 = seq2seq(q2, len2, q1, len1, s1, 
+    out2, state2, loss2 = seq2seq(src2, src2_len, tgt2, tgt2_len, label2, 
                                         hidden_size, training, 0.1, reuse=True)
+    
+    # self.tensors.extend([loss1, loss2])
+    # self.tensors.extend(global_tensors)
 
     #=======================
     # ESIM Model
@@ -305,11 +347,9 @@ class ModelSeq(object):
     
     # Compare
     q1_combined = concatenate([q1_encoded, q2_aligned, 
-                        tf.abs(q1_encoded-q2_aligned), q1_encoded*q2_aligned],
-                        out1)
+                        tf.abs(q1_encoded-q2_aligned), q1_encoded*q2_aligned])
     q2_combined = concatenate([q2_encoded, q1_aligned, 
-                        tf.abs(q2_encoded-q1_aligned), q2_encoded*q1_aligned],
-                        out2)
+                        tf.abs(q2_encoded-q1_aligned), q2_encoded*q1_aligned])
 
     q1_proj = proj(q1_combined, hidden_size, 0.5)
     q2_proj = proj(q2_combined, hidden_size, 0.5)
@@ -318,7 +358,10 @@ class ModelSeq(object):
     q2_compare, _ = biRNN(q2_proj, len2, hidden_size, training, 0.1, "compare", reuse=True)
     
     # Aggregate
-    x = aggregate(q1_compare, q2_compare, hidden_size, training)
+    x = aggregate(q1_compare, q2_compare, 
+                  tf.concat([state1[0].h, state1[1].h], axis=-1), 
+                  tf.concat([state2[0].h, state2[1].h], axis=-1),
+                  hidden_size, training)
         
     logits = tf.squeeze(Dense(1)(x))
 
@@ -336,6 +379,7 @@ class ModelSeq(object):
     l2 = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables()
                     if 'bias' not in v.name ]) * l2_coef
     self.loss += l2
+    self.loss += (loss1 + loss2)
     
     #=======================
     # optimizer

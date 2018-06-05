@@ -23,6 +23,7 @@ from model_esim import ModelESIM
 from model_bimpm import ModelBiMPM
 from model_rnet import ModelRNet
 from model_qanet import ModelQANet
+from model_seq import ModelSeq
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", help="bimpm, sialstm, siacnn")
@@ -48,7 +49,8 @@ models = {
   "esim":ModelESIM,
   "bimpm":ModelBiMPM,
   "rnet": ModelRNet,
-  "qanet": ModelQANet
+  "qanet": ModelQANet,
+  "seq": ModelSeq
 }
 
 if args.model in models :
@@ -214,14 +216,10 @@ def debug_model():
     print(v.name)
 
   with tf.train.MonitoredTrainingSession() as sess:
-
-    for t in sess.run(m.tensors):
-      print(t.shape)
-    
-    # for gt in m.gradients:
-    #     print(gt.name)
-        
-    # while not sess.should_stop():
+    while not sess.should_stop():
+      sess.run(m.tensors)
+      # for t in sess.run(m.tensors):
+      #   print(t)
     #   # _, loss, acc = sess.run([m.train_op, m.loss, m.acc])
     #   # print(loss, acc)
       
