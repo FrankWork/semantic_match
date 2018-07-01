@@ -91,6 +91,9 @@ http://www.sohu.com/a/222501203_717210
 https://www.kaggle.com/c/quora-question-pairs/discussion/34325
 https://www.kaggle.com/c/multinli-matched-evaluation/leaderboard
 
+拍拍贷 https://www.ppdai.ai/mirror/goToMirrorDetail?mirrorId=1&tabindex=1
+天池   https://tianchi.aliyun.com/competition/introduction.htm?spm=5176.100066.0.0.798f33afftdSM9&raceId=231661
+
 # 分词
 
 还款期 数
