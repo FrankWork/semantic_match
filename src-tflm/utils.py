@@ -4,7 +4,7 @@ import sys
 import json
 import math
 import time
-import unicodedata
+# import unicodedata
 import numpy as np
 import tensorflow as tf
 from tensorflow.python.framework import function

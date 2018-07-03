@@ -1,23 +1,222 @@
 import os
+import sys
 import time
 import math
 import json
-import joblib
 import random
 import argparse
 import numpy as np
 import tensorflow as tf
+from tensorflow.python.framework import function
 
 from tqdm import tqdm
 from functools import partial
 from sklearn.utils import shuffle
 from sklearn.metrics import accuracy_score
 
-from opt import adam, warmup_cosine, warmup_linear, warmup_constant
-from datasets import rocstories
-from analysis import rocstories as rocstories_analysis
-from text_utils import TextEncoder
-from utils import encode_dataset, flatten, iter_data, find_trainable_variables, get_ema_vars, convert_gradient_to_tensor, shape_list, ResultLogger, assign_to_gpu, average_grads, make_path
+# from opt import adam, warmup_cosine, warmup_linear, warmup_constant
+# from datasets import rocstories
+# from analysis import rocstories as rocstories_analysis
+# from text_utils import TextEncoder
+# from utils import flatten, iter_data, find_trainable_variables, get_ema_vars, \
+#         convert_gradient_to_tensor, shape_list, ResultLogger, assign_to_gpu, average_grads, make_path
+
+
+def shape_list(x):
+    """
+    deal with dynamic shape in tensorflow cleanly
+    """
+    ps = x.get_shape().as_list()
+    ts = tf.shape(x)
+    return [ts[i] if ps[i] is None else ps[i] for i in range(len(ps))]
+
+def np_softmax(x, t=1):
+    x = x/t
+    x = x - np.max(x, axis=-1, keepdims=True)
+    ex = np.exp(x)
+    return ex/np.sum(ex, axis=-1, keepdims=True)
+
+def make_path(f):
+    d = os.path.dirname(f)
+    if d and not os.path.exists(d):
+        os.makedirs(d)
+    return f
+
+def _identity_init(shape, dtype, partition_info, scale):
+    n = shape[-1]
+    w = np.eye(n)*scale
+    if len([s for s in shape if s != 1]) == 2:
+        w = w.reshape(shape)
+    return w.astype(np.float32)
+
+def identity_init(scale=1.0):
+    return partial(_identity_init, scale=scale)
+
+def _np_init(shape, dtype, partition_info, w):
+    return w
+
+def np_init(w):
+    return partial(_np_init, w=w)
+
+class ResultLogger(object):
+    def __init__(self, path, *args, **kwargs):
+        if 'time' not in kwargs:
+            kwargs['time'] = time.time()
+        self.f_log = open(make_path(path), 'w')
+        self.f_log.write(json.dumps(kwargs)+'\n')
+
+    def log(self, **kwargs):
+        if 'time' not in kwargs:
+            kwargs['time'] = time.time()
+        self.f_log.write(json.dumps(kwargs)+'\n')
+        self.f_log.flush()
+
+    def close(self):
+        self.f_log.close()
+
+def find_trainable_variables(key):
+    return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, ".*{}.*".format(key))
+
+def flatten(outer):
+    return [el for inner in outer for el in inner]
+
+def remove_none(l):
+    return [e for e in l if e is not None]
+
+def iter_data(*datas, n_batch=128, truncate=False, verbose=False, max_batches=float("inf")):
+    n = len(datas[0])
+    if truncate:
+        n = (n//n_batch)*n_batch
+    n = min(n, max_batches*n_batch)
+    n_batches = 0
+    if verbose:
+        f = sys.stderr
+    else:
+        f = open(os.devnull, 'w')
+    for i in tqdm(range(0, n, n_batch), total=n//n_batch, file=f, ncols=80, leave=False):
+        if n_batches >= max_batches: raise StopIteration
+        if len(datas) == 1:
+            yield datas[0][i:i+n_batch]
+        else:
+            yield (d[i:i+n_batch] for d in datas)
+        n_batches += 1
+
+def get_ema_if_exists(v, gvs):
+    name = v.name.split(':')[0]
+    ema_name = name+'/ExponentialMovingAverage:0'
+    ema_v = [v for v in gvs if v.name == ema_name]
+    if len(ema_v) == 0:
+        ema_v = [v]
+    return ema_v[0]
+
+def get_ema_vars(*vs):
+    if tf.get_variable_scope().reuse:
+        gvs = tf.global_variables()
+        vs = [get_ema_if_exists(v, gvs) for v in vs]
+    if len(vs) == 1:
+        return vs[0]
+    else:
+        return vs
+
+@function.Defun(
+    python_grad_func=lambda x, dy: tf.convert_to_tensor(dy),
+    shape_func=lambda op: [op.inputs[0].get_shape()])
+def convert_gradient_to_tensor(x):
+    """force gradient to be a dense tensor
+    it's often faster to do dense embedding gradient on GPU than sparse on CPU
+    """
+    return x
+
+def assign_to_gpu(gpu=0, ps_dev="/device:CPU:0"):
+    def _assign(op):
+        node_def = op if isinstance(op, tf.NodeDef) else op.node_def
+        if node_def.op == "Variable":
+            return ps_dev
+        else:
+            return "/gpu:%d" % gpu
+    return _assign
+
+def average_grads(tower_grads):
+    def average_dense(grad_and_vars):
+        if len(grad_and_vars) == 1:
+            return grad_and_vars[0][0]
+
+        grad = grad_and_vars[0][0]
+        for g, _ in grad_and_vars[1:]:
+            grad += g
+        return grad / len(grad_and_vars)
+
+    def average_sparse(grad_and_vars):
+        if len(grad_and_vars) == 1:
+            return grad_and_vars[0][0]
+
+        indices = []
+        values = []
+        for g, _ in grad_and_vars:
+            indices += [g.indices]
+            values += [g.values]
+        indices = tf.concat(indices, 0)
+        values = tf.concat(values, 0)
+        return tf.IndexedSlices(values, indices, grad_and_vars[0][0].dense_shape)
+
+    average_grads = []
+    for grad_and_vars in zip(*tower_grads):
+        if grad_and_vars[0][0] is None:
+            grad = None
+        elif isinstance(grad_and_vars[0][0], tf.IndexedSlices):
+            grad = average_sparse(grad_and_vars)
+        else:
+            grad = average_dense(grad_and_vars)
+        v = grad_and_vars[0][1]
+        grad_and_var = (grad, v)
+        average_grads.append(grad_and_var)
+    return average_grads
+
+def warmup_cosine(x, warmup=0.002):
+    s = tf.cast(x <= warmup, tf.float32)
+    return s*(x/warmup) + (1-s)*(0.5 * (1 + tf.cos(math.pi * x)))
+
+def warmup_constant(x, warmup=0.002):
+    s = tf.cast(x <= warmup, tf.float32)
+    return s*(x/warmup) + (1-s)*1
+
+def warmup_linear(x, warmup=0.002):
+    s = tf.cast(x <= warmup, tf.float32)
+    return (s*(x/warmup) + (1-s))*(1-x)
+
+schedules = {
+    'warmup_cosine':warmup_cosine,
+    'warmup_constant':warmup_constant,
+    'warmup_linear':warmup_linear,
+}
+
+def adam(params, grads, lr, schedule, t_total, b1=0.9, b2=0.999, e=1e-8, l2=0, vector_l2=False, max_grad_norm=-1, **kwargs):
+    """
+    adam with weight decay fix
+    """
+    t = tf.Variable(0, dtype=tf.float32, trainable=False)
+    tt = t+1
+    updates = [t.assign(tt)]
+    if max_grad_norm > 0:
+        grads, _ = tf.clip_by_global_norm(grads, max_grad_norm)
+    for p, g in zip(params, grads):
+        if p is None or g is None:
+            print("can't train", p.name, g)
+        else:
+            if isinstance(g, tf.IndexedSlices):
+                g = tf.convert_to_tensor(g)
+            m = tf.Variable(p*0, dtype=tf.float32, trainable=False)
+            v = tf.Variable(p*0, dtype=tf.float32, trainable=False)
+            lrt = lr*tf.sqrt(1-b2**tt)/(1-b1**tt)
+            lrt *= schedule(t/t_total)
+            mt = b1*m + (1-b1)*g
+            vt = b2*v + (1-b2)*g*g
+            if (len(p.get_shape()) > 1 or vector_l2) and l2 > 0:
+                pt = p - lrt * (mt / (tf.sqrt(vt) + e) + l2*p)
+            else:
+                pt = p - lrt * (mt / (tf.sqrt(vt) + e))
+            updates.extend([m.assign(mt), v.assign(vt), p.assign(pt)])
+    return tf.group(*updates)
 
 def gelu(x):
     return 0.5*x*(1+tf.tanh(math.sqrt(2/math.pi)*(x+0.044715*tf.pow(x, 3))))
@@ -174,7 +373,9 @@ def model(X, M, Y, train=False, reuse=False):
 
         lm_h = tf.reshape(h[:, :-1], [-1, n_embd])
         lm_logits = tf.matmul(lm_h, we, transpose_b=True)
-        lm_losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=lm_logits, labels=tf.reshape(X[:, 1:, 0], [-1]))
+        lm_losses = tf.nn.sparse_softmax_cross_entropy_with_logits(
+                                        logits=lm_logits, 
+                                        labels=tf.reshape(X[:, 1:, 0], [-1]))
         lm_losses = tf.reshape(lm_losses, [shape_list(X)[0], shape_list(X)[1]-1])
         lm_losses = tf.reduce_sum(lm_losses*M[:, 1:], 1)/tf.reduce_sum(M[:, 1:], 1)
 
@@ -233,6 +434,10 @@ def transform_roc(X1, X2, X3):
     mmb = np.zeros((n_batch, 2, n_ctx), dtype=np.float32)
     start = encoder['_start_']
     delimiter = encoder['_delimiter_']
+    print(f'max_len {max_len}, n_ctx{n_ctx}')
+    import sys
+    sys.stdout.flush()
+
     for i, (x1, x2, x3), in enumerate(zip(X1, X2, X3)):
         x12 = [start]+x1[:max_len]+[delimiter]+x2[:max_len]+[clf_token]
         x13 = [start]+x1[:max_len]+[delimiter]+x3[:max_len]+[clf_token]
@@ -270,9 +475,19 @@ def iter_predict(Xs, Ms):
     logits = np.concatenate(logits, 0)
     return logits
 
-def save(path):
-    ps = sess.run(params)
-    joblib.dump(ps, make_path(path))
+def save_params(dir, file, sess, var_list):
+    if not os.path.exists(dir):
+        os.makedirs(dir)
+    
+    saver = tf.train.Saver(var_list)
+    saver.save(sess, os.path.join(dir, file))
+
+def load_params(dir, file, sess, var_list):
+    path = os.path.join(dir, file)
+    assert os.path.exists(path), 'path {0} not exists'.format(path)
+    
+    saver = tf.train.Saver(var_list)
+    saver.restore(sess, path)
 
 def log():
     global best_score
@@ -282,13 +497,14 @@ def log():
     va_cost = va_cost/n_valid
     tr_acc = accuracy_score(trY[:n_valid], np.argmax(tr_logits, 1))*100.
     va_acc = accuracy_score(vaY, np.argmax(va_logits, 1))*100.
-    logger.log(n_epochs=n_epochs, n_updates=n_updates, tr_cost=tr_cost, va_cost=va_cost, tr_acc=tr_acc, va_acc=va_acc)
+    logger.log(n_epochs=n_epochs, n_updates=n_updates, 
+               tr_cost=tr_cost, va_cost=va_cost, tr_acc=tr_acc, va_acc=va_acc)
     print('%d %d %.3f %.3f %.2f %.2f'%(n_epochs, n_updates, tr_cost, va_cost, tr_acc, va_acc))
     if submit:
         score = va_acc
         if score > best_score:
             best_score = score
-            save(os.path.join(save_dir, desc, 'best_params.jl'))
+            save_params(dir, 'best_params', sess, var_list)
 
 argmax = lambda x:np.argmax(x, 1)
 
@@ -318,13 +534,56 @@ def predict():
         for i, prediction in enumerate(predictions):
             f.write('{}\t{}\n'.format(i, prediction))
 
+pjoin = os.path.join
+
+def dataset_lm(dir, mode='train'):
+    path = pjoin(dir, '{0}_ids.npy'.format(mode))
+    data = np.load(path)
+    n = len(data)
+
+    X = np.zeros((n, maxlen_lm, 2), dtype=np.int32)
+    length = np.zeros(n, dtype=np.int32)
+    
+    for i, x in enumerate(data):
+        m = len(x)
+        length[i] = m
+        X[i, :m, 0] = x
+    X[:, :, 1] = np.arange(n_vocab, n_vocab + maxlen_lm)# positional feature
+    return X, length
+
+def dataset_cl(dir, mode='train'):
+    x_path = pjoin(dir, '{0}_ids.npy'.format(mode))
+    y_path = pjoin(dir, '{0}_labels.npy'.format(mode))
+    data = np.load(x_path)
+    Y = np.load(y_path)
+    n = len(data)
+
+    delimiter = [ n_vocab - 1 ]
+
+    X = np.zeros((n, 2, maxlen_cl+1, 2), dtype=np.int32)
+    length = np.zeros(n, dtype=np.int32)
+    
+    for i, x in enumerate(data):
+        m = len(x[0]) + len(x[1]) + 1
+        length[i] = m
+        X[i, 0, :m, 0] = x[0] + delimiter + x[1]
+        X[i, 1, :m, 0] = x[1] + delimiter + x[0]
+    X[:, :, :, 1] = np.arange(n_vocab, n_vocab + maxlen_cl + 1) # positional feature
+    return X, Y, length
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--data_dir', type=str, default='process/')
+    parser.add_argument('--maxlen_lm', type=int, default=155)
+    parser.add_argument('--maxlen_cl', type=int, default=167) # without delimiter
+    parser.add_argument('--n_vocab', type=int, default=1425)
+    
+    
+
     parser.add_argument('--desc', type=str)
-    parser.add_argument('--dataset', type=str)
+    # parser.add_argument('--dataset', type=str)
     parser.add_argument('--log_dir', type=str, default='log/')
     parser.add_argument('--save_dir', type=str, default='save/')
-    parser.add_argument('--data_dir', type=str, default='data/')
     parser.add_argument('--submission_dir', type=str, default='submission/')
     parser.add_argument('--submit', action='store_true')
     parser.add_argument('--analysis', action='store_true')
@@ -334,7 +593,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_grad_norm', type=int, default=1)
     parser.add_argument('--lr', type=float, default=6.25e-5)
     parser.add_argument('--lr_warmup', type=float, default=0.002)
-    parser.add_argument('--n_ctx', type=int, default=512)
+    
     parser.add_argument('--n_embd', type=int, default=768)
     parser.add_argument('--n_head', type=int, default=12)
     parser.add_argument('--n_layer', type=int, default=12)
@@ -348,9 +607,9 @@ if __name__ == '__main__':
     parser.add_argument('--opt', type=str, default='adam')
     parser.add_argument('--afn', type=str, default='gelu')
     parser.add_argument('--lr_schedule', type=str, default='warmup_linear')
-    parser.add_argument('--encoder_path', type=str, default='model/encoder_bpe_40000.json')
-    parser.add_argument('--bpe_path', type=str, default='model/vocab_40000.bpe')
-    parser.add_argument('--n_transfer', type=int, default=12)
+    # parser.add_argument('--encoder_path', type=str, default='model/encoder_bpe_40000.json')
+    # parser.add_argument('--bpe_path', type=str, default='model/vocab_40000.bpe')
+    # parser.add_argument('--n_transfer', type=int, default=12)
     parser.add_argument('--lm_coef', type=float, default=0.5)
     parser.add_argument('--b1', type=float, default=0.9)
     parser.add_argument('--b2', type=float, default=0.999)
@@ -364,24 +623,19 @@ if __name__ == '__main__':
     tf.set_random_seed(seed)
 
     logger = ResultLogger(path=os.path.join(log_dir, '{}.jsonl'.format(desc)), **args.__dict__)
-    text_encoder = TextEncoder(encoder_path, bpe_path) # bpe tokenizer
-    encoder = text_encoder.encoder
-    n_vocab = len(text_encoder.encoder)
 
-    (trX1, trX2, trX3, trY), (vaX1, vaX2, vaX3, vaY), (teX1, teX2, teX3) = encode_dataset(rocstories(data_dir), encoder=text_encoder)
-    n_y = 2
-    encoder['_start_'] = len(encoder)     # add <bos> token
-    encoder['_delimiter_'] = len(encoder)
-    encoder['_classify_'] = len(encoder)
-    clf_token = encoder['_classify_']
-    n_special = 3
-    max_len = n_ctx//2-2
-    n_ctx = min(max([len(x1[:max_len])+max(len(x2[:max_len]), len(x3[:max_len])) for x1, x2, x3 in zip(trX1, trX2, trX3)]+[len(x1[:max_len])+max(len(x2[:max_len]), len(x3[:max_len])) for x1, x2, x3 in zip(vaX1, vaX2, vaX3)]+[len(x1[:max_len])+max(len(x2[:max_len]), len(x3[:max_len])) for x1, x2, x3 in zip(teX1, teX2, teX3)])+3, n_ctx)
-    trX, trM = transform_roc(trX1, trX2, trX3)
-    vaX, vaM = transform_roc(vaX1, vaX2, vaX3)
-    if submit:
-        teX, teM = transform_roc(teX1, teX2, teX3)
+    # load language model data
+    lm_dir = pjoin(data_dir, 'lm')
+    trn_lm_x, trn_lm_len = dataset_lm(lm_dir, mode='train')
+    val_lm_x, val_lm_len = dataset_lm(lm_dir, mode='test')
 
+    cl_dir = pjoin(data_dir, 'cl')
+    trn_cl_x, trn_cl_y, trn_cl_len = dataset_cl(cl_dir, mode='train')
+    val_cl_x, val_cl_y, val_cl_len = dataset_cl(cl_dir, mode='test')
+
+    n_position = max(maxlen_lm, maxlen_cl+1)
+
+    # build training model graph
     n_train = len(trY)
     n_valid = len(vaY)
     n_batch_train = n_batch*n_gpu
@@ -398,25 +652,14 @@ if __name__ == '__main__':
     train, logits, clf_losses, lm_losses = mgpu_train(X_train, M_train, Y_train)
     clf_loss = tf.reduce_mean(clf_losses)
 
-    params = find_trainable_variables('model')
+    # init variables
+    var_list = find_trainable_variables('model')
     sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
     sess.run(tf.global_variables_initializer())
 
-    shapes = json.load(open('model/params_shapes.json'))
-    offsets = np.cumsum([np.prod(shape) for shape in shapes])
-    init_params = [np.load('model/params_{}.npy'.format(n)) for n in range(10)]
-    init_params = np.split(np.concatenate(init_params, 0), offsets)[:-1]
-    init_params = [param.reshape(shape) for param, shape in zip(init_params, shapes)]
-    init_params[0] = init_params[0][:n_ctx]
-    init_params[0] = np.concatenate([init_params[1], (np.random.randn(n_special, n_embd)*0.02).astype(np.float32), init_params[0]], 0)
-    del init_params[1]
+    # # load pre-trained variables
 
-    if n_transfer == -1:
-        n_transfer = 0
-    else:
-        n_transfer = 1+n_transfer*12
-    sess.run([p.assign(ip) for p, ip in zip(params[:n_transfer], init_params[:n_transfer])])
-
+    # build predict graph
     eval_mgpu_logits, eval_mgpu_clf_losses, eval_mgpu_lm_losses = mgpu_predict(X_train, M_train, Y_train)
     eval_logits, eval_clf_losses, eval_lm_losses = model(X, M, Y, train=False, reuse=True)
     eval_clf_loss = tf.reduce_mean(eval_clf_losses)
@@ -427,18 +670,23 @@ if __name__ == '__main__':
     if dataset != 'stsb':
         trYt = trY
     if submit:
-        save(os.path.join(save_dir, desc, 'best_params.jl'))
+        save_params(dir, file, sess, var_list)
+
     best_score = 0
+    # start training
     for i in range(n_iter):
-        for xmb, mmb, ymb in iter_data(*shuffle(trX, trM, trYt, random_state=np.random), n_batch=n_batch_train, truncate=True, verbose=True):
+        train_data = iter_data(*shuffle(trX, trM, trYt, random_state=np.random), 
+                                n_batch=n_batch_train, truncate=True, verbose=True)
+        for xmb, mmb, ymb in train_data:
             cost, _ = sess.run([clf_loss, train], {X_train:xmb, M_train:mmb, Y_train:ymb})
             n_updates += 1
             if n_updates in [1000, 2000, 4000, 8000, 16000, 32000] and n_epochs == 0:
                 log()
         n_epochs += 1
         log()
+    # predict
     if submit:
-        sess.run([p.assign(ip) for p, ip in zip(params, joblib.load(os.path.join(save_dir, desc, 'best_params.jl')))])
+        load_params(dir, file, sess, var_list)
         predict()
-        if analysis:
-            rocstories_analysis(data_dir, os.path.join(submission_dir, 'ROCStories.tsv'), os.path.join(log_dir, 'rocstories.jsonl'))
+        # if analysis:
+        #     rocstories_analysis(data_dir, os.path.join(submission_dir, 'ROCStories.tsv'), os.path.join(log_dir, 'rocstories.jsonl'))
