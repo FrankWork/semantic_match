@@ -508,23 +508,10 @@ def log():
 
 argmax = lambda x:np.argmax(x, 1)
 
-pred_fns = {
-    'rocstories':argmax,
-}
-
-filenames = {
-    'rocstories':'ROCStories.tsv',
-}
-
-label_decoders = {
-    'rocstories':None,
-}
-
 def predict():
-    filename = filenames[dataset]
-    pred_fn = pred_fns[dataset]
-    label_decoder = label_decoders[dataset]
-    predictions = pred_fn(iter_predict(teX, teM))
+    filename = 'ROCStories.tsv'
+    label_decoder = None
+    predictions = argmax(iter_predict(teX, teM))
     if label_decoder is not None:
         predictions = [label_decoder[prediction] for prediction in predictions]
     path = os.path.join(submission_dir, filename)
@@ -643,7 +630,7 @@ if __name__ == '__main__':
 
     X_train = tf.placeholder(tf.int32, [n_batch_train, 2, n_ctx, 2])
     M_train = tf.placeholder(tf.float32, [n_batch_train, 2, n_ctx])
-    X = tf.placeholder(tf.int32, [None, 2, n_ctx, 2])
+    X = tf.placeholder(tf.int32, [None, 2, n_ctx, 2]) # for single gpu
     M = tf.placeholder(tf.float32, [None, 2, n_ctx])
 
     Y_train = tf.placeholder(tf.int32, [n_batch_train])
