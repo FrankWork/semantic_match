@@ -359,9 +359,35 @@ def clf(x, ny, w_init=tf.random_normal_initializer(stddev=0.02), b_init=tf.const
         b = tf.get_variable("b", [ny], initializer=b_init)
         return tf.matmul(x, w)+b
 
-def model(X, M, Y, train=False, reuse=False):
+def language_model(X, L, train=False, reuse=False):
     with tf.variable_scope('model', reuse=reuse):
-        we = tf.get_variable("we", [n_vocab+n_special+n_ctx, n_embd], initializer=tf.random_normal_initializer(stddev=0.02))
+        
+        M = tf.to_float(tf.sequence_mask(L, maxlen_lm)) # (n, maxlen)
+
+        we = tf.get_variable("we", [n_vocab+n_position, n_embd], initializer=tf.random_normal_initializer(stddev=0.02))
+        we = dropout(we, embd_pdrop, train)
+
+        h = embed(X, we)
+        for layer in range(n_layer):
+            h = block(h, 'h%d'%layer, train=train, scale=True)
+
+        lm_h = tf.reshape(h[:, :-1], [-1, n_embd]) # remove the last token of lm_h
+        lm_logits = tf.matmul(lm_h, we, transpose_b=True)
+        lm_losses = tf.nn.sparse_softmax_cross_entropy_with_logits(
+                                        logits=lm_logits, 
+                                        labels=tf.reshape(X[:, 1:, 0], [-1]))
+        lm_losses = tf.reshape(lm_losses, [shape_list(X)[0], shape_list(X)[1]-1])
+        lm_losses = tf.reduce_sum(lm_losses*M[:, 1:], 1)/tf.reduce_sum(M[:, 1:], 1)
+
+        return lm_losses
+
+def classifier_model(X, L, Y, train=False, reuse=False):
+    with tf.variable_scope('model', reuse=reuse):
+        
+        l2d = tf.tile(tf.expand_dims(L, axis=1), [1, 2])    # (n, 2)
+        M = tf.to_float(tf.sequence_mask(l2d, maxlen_cl+1)) # (n, 2, maxlen)
+
+        we = tf.get_variable("we", [n_vocab+n_position, n_embd], initializer=tf.random_normal_initializer(stddev=0.02))
         we = dropout(we, embd_pdrop, train)
 
         X = tf.reshape(X, [-1, n_ctx, 2])
@@ -427,28 +453,6 @@ def mgpu_predict(*xs):
             gpu_ops.append([clf_logits, clf_losses, lm_losses])
     ops = [tf.concat(op, 0) for op in zip(*gpu_ops)]
     return ops
-
-def transform_roc(X1, X2, X3):
-    n_batch = len(X1)
-    xmb = np.zeros((n_batch, 2, n_ctx, 2), dtype=np.int32)
-    mmb = np.zeros((n_batch, 2, n_ctx), dtype=np.float32)
-    start = encoder['_start_']
-    delimiter = encoder['_delimiter_']
-    print(f'max_len {max_len}, n_ctx{n_ctx}')
-    import sys
-    sys.stdout.flush()
-
-    for i, (x1, x2, x3), in enumerate(zip(X1, X2, X3)):
-        x12 = [start]+x1[:max_len]+[delimiter]+x2[:max_len]+[clf_token]
-        x13 = [start]+x1[:max_len]+[delimiter]+x3[:max_len]+[clf_token]
-        l12 = len(x12)
-        l13 = len(x13)
-        xmb[i, 0, :l12, 0] = x12
-        xmb[i, 1, :l13, 0] = x13
-        mmb[i, 0, :l12] = 1
-        mmb[i, 1, :l13] = 1
-    xmb[:, :, :, 1] = np.arange(n_vocab+n_special, n_vocab+n_special+n_ctx)
-    return xmb, mmb
 
 def iter_apply(Xs, Ms, Ys):
     fns = [lambda x:np.concatenate(x, 0), lambda x:float(np.sum(x))]
@@ -564,7 +568,7 @@ if __name__ == '__main__':
     parser.add_argument('--maxlen_lm', type=int, default=155)
     parser.add_argument('--maxlen_cl', type=int, default=167) # without delimiter
     parser.add_argument('--n_vocab', type=int, default=1425)
-    
+    parser.add_argument('--pretrain', action='store_true')
     
 
     parser.add_argument('--desc', type=str)
@@ -611,31 +615,43 @@ if __name__ == '__main__':
 
     logger = ResultLogger(path=os.path.join(log_dir, '{}.jsonl'.format(desc)), **args.__dict__)
 
-    # load language model data
-    lm_dir = pjoin(data_dir, 'lm')
-    trn_lm_x, trn_lm_len = dataset_lm(lm_dir, mode='train')
-    val_lm_x, val_lm_len = dataset_lm(lm_dir, mode='test')
-
-    cl_dir = pjoin(data_dir, 'cl')
-    trn_cl_x, trn_cl_y, trn_cl_len = dataset_cl(cl_dir, mode='train')
-    val_cl_x, val_cl_y, val_cl_len = dataset_cl(cl_dir, mode='test')
-
+    # load data
     n_position = max(maxlen_lm, maxlen_cl+1)
 
+    if pretrain:
+        lm_dir = pjoin(data_dir, 'lm')
+        trn_lm_x, trn_lm_len = dataset_lm(lm_dir, mode='train')
+        val_lm_x, val_lm_len = dataset_lm(lm_dir, mode='test')
+
+        X = tf.placeholder(tf.int32, [None, maxlen_lm, 2])
+        L = tf.placeholder(tf.int32, [None])
+
+        lm_loss = language_model(X, L, train=True, reuse=False)
+    else:
+        cl_dir = pjoin(data_dir, 'cl')
+        trn_cl_x, trn_cl_y, trn_cl_len = dataset_cl(cl_dir, mode='train')
+        val_cl_x, val_cl_y, val_cl_len = dataset_cl(cl_dir, mode='test')
+
+        X = tf.placeholder(tf.int32, [None, 2, maxlen_cl+1, 2])
+        L = tf.placeholder(tf.int32, [None])
+        Y = tf.placeholder(tf.int32, [None])
+
+        clf_logits, clf_losses, lm_losses = classifier_model(X, L, Y, train=True, reuse=False)
+
+
     # build training model graph
+    
+
+
+
     n_train = len(trY)
     n_valid = len(vaY)
     n_batch_train = n_batch*n_gpu
     n_updates_total = (n_train//n_batch_train)*n_iter
 
-    X_train = tf.placeholder(tf.int32, [n_batch_train, 2, n_ctx, 2])
-    M_train = tf.placeholder(tf.float32, [n_batch_train, 2, n_ctx])
-    X = tf.placeholder(tf.int32, [None, 2, n_ctx, 2]) # for single gpu
-    M = tf.placeholder(tf.float32, [None, 2, n_ctx])
+    
 
-    Y_train = tf.placeholder(tf.int32, [n_batch_train])
-    Y = tf.placeholder(tf.int32, [None])
-
+    
     train, logits, clf_losses, lm_losses = mgpu_train(X_train, M_train, Y_train)
     clf_loss = tf.reduce_mean(clf_losses)
 
