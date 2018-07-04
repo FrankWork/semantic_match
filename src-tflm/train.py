@@ -13,8 +13,7 @@ from tensorflow.python.framework import function
 from tqdm import tqdm, trange
 from functools import partial
 from sklearn.utils import shuffle
-from sklearn.metrics import accuracy_score
-
+from sklearn.metrics import precision_score, recall_score, accuracy_score
 
 def shape_list(x):
     """
@@ -68,8 +67,14 @@ class ResultLogger(object):
     def close(self):
         self.f_log.close()
 
-def find_trainable_variables(key):
-    return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, ".*{}.*".format(key))
+def find_trainable_variables(key, exclude=None):
+    trainable_variables = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, ".*{}.*".format(key))
+    if exclude is not None:
+        trainable_variables = [
+            var for var in trainable_variables
+            if exclude not in var.name
+        ]
+    return trainable_variables
 
 def flatten(outer):
     return [el for inner in outer for el in inner]
@@ -350,8 +355,8 @@ def classifier_model(X, L, Y, train=False, reuse=False):
         we = tf.get_variable("we", [n_vocab+n_position, n_embd], initializer=tf.random_normal_initializer(stddev=0.02))
         we = dropout(we, embd_pdrop, train)
 
-        X = tf.reshape(X, [-1, n_ctx, 2])
-        M = tf.reshape(M, [-1, n_ctx])
+        X = tf.reshape(X, [-1, maxlen_cl+1, 2])
+        M = tf.reshape(M, [-1, maxlen_cl+1])
 
         h = embed(X, we)
         for layer in range(n_layer):
@@ -366,8 +371,9 @@ def classifier_model(X, L, Y, train=False, reuse=False):
         lm_losses = tf.reduce_sum(lm_losses*M[:, 1:], 1)/tf.reduce_sum(M[:, 1:], 1)
 
         clf_h = tf.reshape(h, [-1, n_embd])
+        clf_token = n_vocab - 3
         pool_idx = tf.cast(tf.argmax(tf.cast(tf.equal(X[:, :, 0], clf_token), tf.float32), 1), tf.int32)
-        clf_h = tf.gather(clf_h, tf.range(shape_list(X)[0], dtype=tf.int32)*n_ctx+pool_idx)
+        clf_h = tf.gather(clf_h, tf.range(shape_list(X)[0], dtype=tf.int32)*(maxlen_cl+1)+pool_idx)
 
         clf_h = tf.reshape(clf_h, [-1, 2, n_embd])
         if train and clf_pdrop > 0:
@@ -378,8 +384,17 @@ def classifier_model(X, L, Y, train=False, reuse=False):
         clf_logits = clf(clf_h, 1, train=train)
         clf_logits = tf.reshape(clf_logits, [-1, 2])
 
+        pred = tf.argmax(clf_logits)
+        acc = tf.reduce_mean(tf.to_float(tf.equal(pred, Y)))
+
         clf_losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=clf_logits, labels=Y)
-        return clf_logits, clf_losses, lm_losses
+        
+        if lm_coef > 0:
+            total_loss = tf.reduce_mean(clf_losses) + lm_coef*tf.reduce_mean(lm_losses)
+        else:
+            total_loss = tf.reduce_mean(clf_losses)
+
+        return clf_logits, total_loss, pred, acc
 
 def train_lm(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
     data_x, data_l = datas
@@ -412,6 +427,81 @@ def train_lm(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
         for i, res in enumerate(res_list):
             print('{0}\t{1}'.format(i, res))
 
+def train_cl(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
+    data_x, data_l, data_y = datas
+
+    n = len(data_l)
+    X, L, Y = holders
+    cl_loss, cl_acc = fetchs
+
+    sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
+    sess.run(tf.global_variables_initializer())
+    var_list = find_trainable_variables('model', exclude='model/clf')
+    load_params(save_dir, "lm_params", sess, var_list)
+
+    res_list = [(0., 0.) for _ in range(epochs)]
+    n_update = len(range(0, n, batch_size))
+
+    try:
+        with trange(epochs, desc='Epoch') as ebar:
+            for e in ebar:
+                data_x, data_l, data_y = shuffle(data_x, data_l, data_y)
+                with trange(0, n, batch_size, desc='Iter') as ibar:
+                    for i in ibar:
+                        x = data_x[i:i+batch_size]
+                        l = data_l[i:i+batch_size]
+                        y = data_y[i:i+batch_size]
+                        _, loss, acc = sess.run([train_op, cl_loss, cl_acc], feed_dict={X:x, L:l, Y:y})
+                        res_list[e][0] += loss/len(x)
+                        res_list[e][1] += acc/len(x)
+                        ibar.set_postfix(loss=loss, acc=acc)
+                res_list[e][0] /= n_update
+                res_list[e][1] /= n_update
+    finally:
+        var_list = find_trainable_variables('model')
+        save_params(save_dir, 'cl_params', sess, var_list)
+        for i, res in enumerate(res_list):
+            print('{0}\t{1}\t{2}'.format(i, res[0], res[1]))
+
+def eval_cl(datas, holders, fetchs, batch_size=64):
+    data_x, data_l, data_y = datas
+
+    n = len(data_l)
+    X, L, Y = holders
+    pred, = fetchs
+
+    sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
+    sess.run(tf.global_variables_initializer())
+    var_list = find_trainable_variables('model')
+    load_params(save_dir, "cl_params", sess, var_list)
+
+    res_list = []
+
+    with trange(0, n, batch_size, desc='Iter') as ibar:
+        for i in ibar:
+            x = data_x[i:i+batch_size]
+            l = data_l[i:i+batch_size]
+            y = data_y[i:i+batch_size]
+            pred_mb = sess.run([pred], feed_dict={X:x, L:l, Y:y})
+            res_list.append(pred_mb)
+    y_pred = np.concatenate(res_list)
+    y_true = data_y
+    
+    print("=" * 40)
+    acc = accuracy_score(y_true, y_pred)
+    print("|| acc: %.3f" % acc)
+    
+    p = precision_score(y_true, y_pred)
+    r = recall_score(y_true, y_pred)
+    f1 = 2 * (p * r) / (p + r)
+    print("|| binary p: %.3f r: %.3f f1: %.3f" % (p, r, f1))
+
+    p = precision_score(y_true, y_pred, average='macro')
+    r = recall_score(y_true, y_pred, average='macro')
+    f1 = 2 * (p * r) / (p + r)
+    print("|| macro  p: %.3f r: %.3f f1: %.3f" % (p, r, f1))
+    print("=" * 40)
+
 def save_params(dir, file, sess, var_list):
     if not os.path.exists(dir):
         os.makedirs(dir)
@@ -425,38 +515,6 @@ def load_params(dir, file, sess, var_list):
     
     saver = tf.train.Saver(var_list)
     saver.restore(sess, path)
-
-def log():
-    global best_score
-    tr_logits, tr_cost = iter_apply(trX[:n_valid], trM[:n_valid], trY[:n_valid])
-    va_logits, va_cost = iter_apply(vaX, vaM, vaY)
-    tr_cost = tr_cost/len(trY[:n_valid])
-    va_cost = va_cost/n_valid
-    tr_acc = accuracy_score(trY[:n_valid], np.argmax(tr_logits, 1))*100.
-    va_acc = accuracy_score(vaY, np.argmax(va_logits, 1))*100.
-    logger.log(n_epochs=n_epochs, n_updates=n_updates, 
-               tr_cost=tr_cost, va_cost=va_cost, tr_acc=tr_acc, va_acc=va_acc)
-    print('%d %d %.3f %.3f %.2f %.2f'%(n_epochs, n_updates, tr_cost, va_cost, tr_acc, va_acc))
-    if submit:
-        score = va_acc
-        if score > best_score:
-            best_score = score
-            save_params(dir, 'best_params', sess, var_list)
-
-argmax = lambda x:np.argmax(x, 1)
-
-def predict():
-    filename = 'ROCStories.tsv'
-    label_decoder = None
-    predictions = argmax(iter_predict(teX, teM))
-    if label_decoder is not None:
-        predictions = [label_decoder[prediction] for prediction in predictions]
-    path = os.path.join(submission_dir, filename)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'w') as f:
-        f.write('{}\t{}\n'.format('index', 'prediction'))
-        for i, prediction in enumerate(predictions):
-            f.write('{}\t{}\n'.format(i, prediction))
 
 pjoin = os.path.join
 
@@ -490,8 +548,8 @@ def dataset_cl(dir, mode='train'):
     for i, x in enumerate(data):
         m = len(x[0]) + len(x[1]) + 1
         length[i] = m
-        X[i, 0, :m, 0] = x[0] + delimiter + x[1]
-        X[i, 1, :m, 0] = x[1] + delimiter + x[0]
+        X[i, 0, :m, 0] = x[0][:-1] + delimiter + x[1] # [:-1] remove eos token
+        X[i, 1, :m, 0] = x[1][:-1] + delimiter + x[0]
     X[:, :, :, 1] = np.arange(n_vocab, n_vocab + maxlen_cl + 1) # positional feature
     return X, Y, length
 
@@ -562,7 +620,6 @@ if __name__ == '__main__':
         sys.stdout.flush()
 
         train_lm((trn_lm_x, trn_lm_len), (X, L), train_op, (lm_loss,), epochs=20, batch_size=64)
-
     else:
         cl_dir = pjoin(data_dir, 'cl')
         trn_cl_x, trn_cl_y, trn_cl_len = dataset_cl(cl_dir, mode='train')
@@ -572,19 +629,15 @@ if __name__ == '__main__':
         L = tf.placeholder(tf.int32, [None])
         Y = tf.placeholder(tf.int32, [None])
 
-        clf_logits, clf_losses, lm_losses = classifier_model(X, L, Y, train=True, reuse=False)
+        clf_logits, clf_loss, pred, acc = classifier_model(X, L, Y, train=True, reuse=False)
         
-        if lm_coef > 0:
-            train_loss = tf.reduce_mean(clf_losses) + lm_coef*tf.reduce_mean(lm_losses)
-        else:
-            train_loss = tf.reduce_mean(clf_losses)
         params = find_trainable_variables("model")
-        grads = tf.gradients(train_loss, params)
+        grads = tf.gradients(clf_loss, params)
 
         lr_schedule_fn = partial(warmup_linear, warmup=lr_warmup)
-        train = adam(params, grads, lr, lr_schedule_fn, n_updates_total, \
+        train_op = adam(params, grads, lr, lr_schedule_fn, n_updates_total, \
                     l2=l2, max_grad_norm=max_grad_norm, vector_l2=vector_l2)
         
-        load_params(dir, file, sess, var_list)
+        eval_cl((val_cl_x, val_cl_len, val_cl_y), (X,L,Y), (pred, ))
 
     
