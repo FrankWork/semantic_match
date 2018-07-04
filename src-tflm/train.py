@@ -1,3 +1,4 @@
+from __future__ import division
 import os
 import sys
 import time
@@ -9,17 +10,10 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.python.framework import function
 
-from tqdm import tqdm
+from tqdm import tqdm, trange
 from functools import partial
 from sklearn.utils import shuffle
 from sklearn.metrics import accuracy_score
-
-# from opt import adam, warmup_cosine, warmup_linear, warmup_constant
-# from datasets import rocstories
-# from analysis import rocstories as rocstories_analysis
-# from text_utils import TextEncoder
-# from utils import flatten, iter_data, find_trainable_variables, get_ema_vars, \
-#         convert_gradient_to_tensor, shape_list, ResultLogger, assign_to_gpu, average_grads, make_path
 
 
 def shape_list(x):
@@ -82,24 +76,6 @@ def flatten(outer):
 
 def remove_none(l):
     return [e for e in l if e is not None]
-
-def iter_data(*datas, n_batch=128, truncate=False, verbose=False, max_batches=float("inf")):
-    n = len(datas[0])
-    if truncate:
-        n = (n//n_batch)*n_batch
-    n = min(n, max_batches*n_batch)
-    n_batches = 0
-    if verbose:
-        f = sys.stderr
-    else:
-        f = open(os.devnull, 'w')
-    for i in tqdm(range(0, n, n_batch), total=n//n_batch, file=f, ncols=80, leave=False):
-        if n_batches >= max_batches: raise StopIteration
-        if len(datas) == 1:
-            yield datas[0][i:i+n_batch]
-        else:
-            yield (d[i:i+n_batch] for d in datas)
-        n_batches += 1
 
 def get_ema_if_exists(v, gvs):
     name = v.name.split(':')[0]
@@ -184,12 +160,6 @@ def warmup_linear(x, warmup=0.002):
     s = tf.cast(x <= warmup, tf.float32)
     return (s*(x/warmup) + (1-s))*(1-x)
 
-schedules = {
-    'warmup_cosine':warmup_cosine,
-    'warmup_constant':warmup_constant,
-    'warmup_linear':warmup_linear,
-}
-
 def adam(params, grads, lr, schedule, t_total, b1=0.9, b2=0.999, e=1e-8, l2=0, vector_l2=False, max_grad_norm=-1, **kwargs):
     """
     adam with weight decay fix
@@ -224,20 +194,10 @@ def gelu(x):
 def swish(x):
     return x*tf.nn.sigmoid(x)
 
-opt_fns = {
-    'adam':adam,
-}
-
 act_fns = {
     'relu':tf.nn.relu,
     'swish':swish,
     'gelu':gelu
-}
-
-lr_schedules = {
-    'warmup_cosine':warmup_cosine,
-    'warmup_linear':warmup_linear,
-    'warmup_constant':warmup_constant,
 }
 
 def _norm(x, g=None, b=None, e=1e-5, axis=[1]):
@@ -379,7 +339,7 @@ def language_model(X, L, train=False, reuse=False):
         lm_losses = tf.reshape(lm_losses, [shape_list(X)[0], shape_list(X)[1]-1])
         lm_losses = tf.reduce_sum(lm_losses*M[:, 1:], 1)/tf.reduce_sum(M[:, 1:], 1)
 
-        return lm_losses
+        return tf.reduce_mean(lm_losses)
 
 def classifier_model(X, L, Y, train=False, reuse=False):
     with tf.variable_scope('model', reuse=reuse):
@@ -421,63 +381,36 @@ def classifier_model(X, L, Y, train=False, reuse=False):
         clf_losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=clf_logits, labels=Y)
         return clf_logits, clf_losses, lm_losses
 
-def mgpu_train(*xs):
-    gpu_ops = []
-    gpu_grads = []
-    xs = (tf.split(x, n_gpu, 0) for x in xs)
-    for i, xs in enumerate(zip(*xs)):
-        do_reuse = True if i > 0 else None
-        with tf.device(assign_to_gpu(i, "/gpu:0")), tf.variable_scope(tf.get_variable_scope(), reuse=do_reuse):
-            clf_logits, clf_losses, lm_losses = model(*xs, train=True, reuse=do_reuse)
-            if lm_coef > 0:
-                train_loss = tf.reduce_mean(clf_losses) + lm_coef*tf.reduce_mean(lm_losses)
-            else:
-                train_loss = tf.reduce_mean(clf_losses)
-            params = find_trainable_variables("model")
-            grads = tf.gradients(train_loss, params)
-            grads = list(zip(grads, params))
-            gpu_grads.append(grads)
-            gpu_ops.append([clf_logits, clf_losses, lm_losses])
-    ops = [tf.concat(op, 0) for op in zip(*gpu_ops)]
-    grads = average_grads(gpu_grads)
-    grads = [g for g, p in grads]
-    train = opt_fns[opt](params, grads, lr, partial(lr_schedules[lr_schedule], warmup=lr_warmup), n_updates_total, l2=l2, max_grad_norm=max_grad_norm, vector_l2=vector_l2, b1=b1, b2=b2, e=e)
-    return [train]+ops
+def train_lm(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
+    data_x, data_l = datas
 
-def mgpu_predict(*xs):
-    gpu_ops = []
-    xs = (tf.split(x, n_gpu, 0) for x in xs)
-    for i, xs in enumerate(zip(*xs)):
-        with tf.device(assign_to_gpu(i, "/gpu:0")), tf.variable_scope(tf.get_variable_scope(), reuse=True):
-            clf_logits, clf_losses, lm_losses = model(*xs, train=False, reuse=True)
-            gpu_ops.append([clf_logits, clf_losses, lm_losses])
-    ops = [tf.concat(op, 0) for op in zip(*gpu_ops)]
-    return ops
+    n = len(data_l)
+    X, L = holders
+    lm_loss, = fetchs
 
-def iter_apply(Xs, Ms, Ys):
-    fns = [lambda x:np.concatenate(x, 0), lambda x:float(np.sum(x))]
-    results = []
-    for xmb, mmb, ymb in iter_data(Xs, Ms, Ys, n_batch=n_batch_train, truncate=False, verbose=True):
-        n = len(xmb)
-        if n == n_batch_train:
-            res = sess.run([eval_mgpu_logits, eval_mgpu_clf_loss], {X_train:xmb, M_train:mmb, Y_train:ymb})
-        else:
-            res = sess.run([eval_logits, eval_clf_loss], {X:xmb, M:mmb, Y:ymb})
-        res = [r*n for r in res]
-        results.append(res)
-    results = zip(*results)
-    return [fn(res) for res, fn in zip(results, fns)]
+    var_list = find_trainable_variables('model')
+    sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
+    sess.run(tf.global_variables_initializer())
 
-def iter_predict(Xs, Ms):
-    logits = []
-    for xmb, mmb in iter_data(Xs, Ms, n_batch=n_batch_train, truncate=False, verbose=True):
-        n = len(xmb)
-        if n == n_batch_train:
-            logits.append(sess.run(eval_mgpu_logits, {X_train:xmb, M_train:mmb}))
-        else:
-            logits.append(sess.run(eval_logits, {X:xmb, M:mmb}))
-    logits = np.concatenate(logits, 0)
-    return logits
+    res_list = [0. for _ in range(epochs)]
+    n_update = len(range(0, n, batch_size))
+
+    try:
+        with trange(epochs, desc='Epoch') as ebar:
+            for e in ebar:
+                data_x, data_l = shuffle(data_x, data_l)
+                with trange(0, n, batch_size, desc='Iter') as ibar:
+                    for i in ibar:
+                        x = data_x[i:i+batch_size]
+                        l = data_l[i:i+batch_size]
+                        _, loss = sess.run([train_op, lm_loss], feed_dict={X:x, L:l})
+                        res_list[e] += loss/len(x)
+                        ibar.set_postfix(loss=loss)
+                res_list[e] /= n_update
+    finally:
+        save_params(save_dir, 'lm_params', sess, var_list)
+        for i, res in enumerate(res_list):
+            print('{0}\t{1}'.format(i, res))
 
 def save_params(dir, file, sess, var_list):
     if not os.path.exists(dir):
@@ -569,24 +502,23 @@ if __name__ == '__main__':
     parser.add_argument('--maxlen_cl', type=int, default=167) # without delimiter
     parser.add_argument('--n_vocab', type=int, default=1425)
     parser.add_argument('--pretrain', action='store_true')
-    
-
-    parser.add_argument('--desc', type=str)
-    # parser.add_argument('--dataset', type=str)
-    parser.add_argument('--log_dir', type=str, default='log/')
+    parser.add_argument("--gpu", type=str, default='0')
     parser.add_argument('--save_dir', type=str, default='save/')
-    parser.add_argument('--submission_dir', type=str, default='submission/')
-    parser.add_argument('--submit', action='store_true')
-    parser.add_argument('--analysis', action='store_true')
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--n_embd', type=int, default=300)
+
+    # parser.add_argument('--desc', type=str)
+    # parser.add_argument('--dataset', type=str)
+    # parser.add_argument('--log_dir', type=str, default='log/')
+    # parser.add_argument('--submission_dir', type=str, default='submission/')
+    # parser.add_argument('--submit', action='store_true')
+    # parser.add_argument('--analysis', action='store_true')
     parser.add_argument('--n_iter', type=int, default=3)
     parser.add_argument('--n_batch', type=int, default=8)
     parser.add_argument('--max_grad_norm', type=int, default=1)
     parser.add_argument('--lr', type=float, default=6.25e-5)
     parser.add_argument('--lr_warmup', type=float, default=0.002)
-    
-    parser.add_argument('--n_embd', type=int, default=768)
-    parser.add_argument('--n_head', type=int, default=12)
+    parser.add_argument('--n_head', type=int, default=10)
     parser.add_argument('--n_layer', type=int, default=12)
     parser.add_argument('--embd_pdrop', type=float, default=0.1)
     parser.add_argument('--attn_pdrop', type=float, default=0.1)
@@ -595,17 +527,13 @@ if __name__ == '__main__':
     parser.add_argument('--l2', type=float, default=0.01)
     parser.add_argument('--vector_l2', action='store_true')
     parser.add_argument('--n_gpu', type=int, default=4)
-    parser.add_argument('--opt', type=str, default='adam')
     parser.add_argument('--afn', type=str, default='gelu')
-    parser.add_argument('--lr_schedule', type=str, default='warmup_linear')
+    # parser.add_argument('--lr_schedule', type=str, default='warmup_linear')
     # parser.add_argument('--encoder_path', type=str, default='model/encoder_bpe_40000.json')
     # parser.add_argument('--bpe_path', type=str, default='model/vocab_40000.bpe')
     # parser.add_argument('--n_transfer', type=int, default=12)
     parser.add_argument('--lm_coef', type=float, default=0.5)
-    parser.add_argument('--b1', type=float, default=0.9)
-    parser.add_argument('--b2', type=float, default=0.999)
-    parser.add_argument('--e', type=float, default=1e-8)
-
+    
     args = parser.parse_args()
     print(args)
     globals().update(args.__dict__)
@@ -613,7 +541,8 @@ if __name__ == '__main__':
     np.random.seed(seed)
     tf.set_random_seed(seed)
 
-    logger = ResultLogger(path=os.path.join(log_dir, '{}.jsonl'.format(desc)), **args.__dict__)
+    # logger = ResultLogger(path=os.path.join(log_dir, '{}.jsonl'.format(desc)), **args.__dict__)
+    os.environ["CUDA_VISIBLE_DEVICES"] = gpu
 
     # load data
     n_position = max(maxlen_lm, maxlen_cl+1)
@@ -622,11 +551,18 @@ if __name__ == '__main__':
         lm_dir = pjoin(data_dir, 'lm')
         trn_lm_x, trn_lm_len = dataset_lm(lm_dir, mode='train')
         val_lm_x, val_lm_len = dataset_lm(lm_dir, mode='test')
+        print('load data done.')
 
         X = tf.placeholder(tf.int32, [None, maxlen_lm, 2])
         L = tf.placeholder(tf.int32, [None])
 
         lm_loss = language_model(X, L, train=True, reuse=False)
+        train_op = tf.train.AdamOptimizer().minimize(lm_loss)
+        print('build graph done.')
+        sys.stdout.flush()
+
+        train_lm((trn_lm_x, trn_lm_len), (X, L), train_op, (lm_loss,), epochs=20, batch_size=64)
+
     else:
         cl_dir = pjoin(data_dir, 'cl')
         trn_cl_x, trn_cl_y, trn_cl_len = dataset_cl(cl_dir, mode='train')
@@ -637,59 +573,18 @@ if __name__ == '__main__':
         Y = tf.placeholder(tf.int32, [None])
 
         clf_logits, clf_losses, lm_losses = classifier_model(X, L, Y, train=True, reuse=False)
+        
+        if lm_coef > 0:
+            train_loss = tf.reduce_mean(clf_losses) + lm_coef*tf.reduce_mean(lm_losses)
+        else:
+            train_loss = tf.reduce_mean(clf_losses)
+        params = find_trainable_variables("model")
+        grads = tf.gradients(train_loss, params)
 
-
-    # build training model graph
-    
-
-
-
-    n_train = len(trY)
-    n_valid = len(vaY)
-    n_batch_train = n_batch*n_gpu
-    n_updates_total = (n_train//n_batch_train)*n_iter
-
-    
-
-    
-    train, logits, clf_losses, lm_losses = mgpu_train(X_train, M_train, Y_train)
-    clf_loss = tf.reduce_mean(clf_losses)
-
-    # init variables
-    var_list = find_trainable_variables('model')
-    sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
-    sess.run(tf.global_variables_initializer())
-
-    # # load pre-trained variables
-
-    # build predict graph
-    eval_mgpu_logits, eval_mgpu_clf_losses, eval_mgpu_lm_losses = mgpu_predict(X_train, M_train, Y_train)
-    eval_logits, eval_clf_losses, eval_lm_losses = model(X, M, Y, train=False, reuse=True)
-    eval_clf_loss = tf.reduce_mean(eval_clf_losses)
-    eval_mgpu_clf_loss = tf.reduce_mean(eval_mgpu_clf_losses)
-
-    n_updates = 0
-    n_epochs = 0
-    if dataset != 'stsb':
-        trYt = trY
-    if submit:
-        save_params(dir, file, sess, var_list)
-
-    best_score = 0
-    # start training
-    for i in range(n_iter):
-        train_data = iter_data(*shuffle(trX, trM, trYt, random_state=np.random), 
-                                n_batch=n_batch_train, truncate=True, verbose=True)
-        for xmb, mmb, ymb in train_data:
-            cost, _ = sess.run([clf_loss, train], {X_train:xmb, M_train:mmb, Y_train:ymb})
-            n_updates += 1
-            if n_updates in [1000, 2000, 4000, 8000, 16000, 32000] and n_epochs == 0:
-                log()
-        n_epochs += 1
-        log()
-    # predict
-    if submit:
+        lr_schedule_fn = partial(warmup_linear, warmup=lr_warmup)
+        train = adam(params, grads, lr, lr_schedule_fn, n_updates_total, \
+                    l2=l2, max_grad_norm=max_grad_norm, vector_l2=vector_l2)
+        
         load_params(dir, file, sess, var_list)
-        predict()
-        # if analysis:
-        #     rocstories_analysis(data_dir, os.path.join(submission_dir, 'ROCStories.tsv'), os.path.join(log_dir, 'rocstories.jsonl'))
+
+    

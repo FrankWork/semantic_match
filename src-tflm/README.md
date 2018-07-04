@@ -13,4 +13,5 @@ The ROCStories dataset can be downloaded from the associated [website](http://cs
 ```bash
 python split_data.py data/ process/
 python tok2id.py process/
+python train.py --pretrain --gpu 0
 ```
