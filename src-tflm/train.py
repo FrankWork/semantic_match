@@ -384,7 +384,7 @@ def classifier_model(X, L, Y, train=False, reuse=False):
         clf_logits = clf(clf_h, 1, train=train)
         clf_logits = tf.reshape(clf_logits, [-1, 2])
 
-        pred = tf.argmax(clf_logits)
+        pred = tf.cast(tf.argmax(tf.nn.softmax(clf_logits), axis=-1), tf.int32, name='pred')
         acc = tf.reduce_mean(tf.to_float(tf.equal(pred, Y)))
 
         clf_losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=clf_logits, labels=Y)
@@ -439,7 +439,7 @@ def train_cl(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
     var_list = find_trainable_variables('model', exclude='model/clf')
     load_params(save_dir, "lm_params", sess, var_list)
 
-    res_list = [(0., 0.) for _ in range(epochs)]
+    res_list = [[0., 0.] for _ in range(epochs)]
     n_update = len(range(0, n, batch_size))
 
     try:
@@ -452,6 +452,8 @@ def train_cl(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
                         l = data_l[i:i+batch_size]
                         y = data_y[i:i+batch_size]
                         _, loss, acc = sess.run([train_op, cl_loss, cl_acc], feed_dict={X:x, L:l, Y:y})
+                        # print(acc)
+                        # exit()
                         res_list[e][0] += loss/len(x)
                         res_list[e][1] += acc/len(x)
                         ibar.set_postfix(loss=loss, acc=acc)
@@ -511,7 +513,7 @@ def save_params(dir, file, sess, var_list):
 
 def load_params(dir, file, sess, var_list):
     path = os.path.join(dir, file)
-    assert os.path.exists(path), 'path {0} not exists'.format(path)
+    # assert os.path.exists(path), 'path {0} not exists'.format(path)
     
     saver = tf.train.Saver(var_list)
     saver.restore(sess, path)
@@ -546,7 +548,7 @@ def dataset_cl(dir, mode='train'):
     length = np.zeros(n, dtype=np.int32)
     
     for i, x in enumerate(data):
-        m = len(x[0]) + len(x[1]) + 1
+        m = len(x[0]) + len(x[1]) #+ 1
         length[i] = m
         X[i, 0, :m, 0] = x[0][:-1] + delimiter + x[1] # [:-1] remove eos token
         X[i, 1, :m, 0] = x[1][:-1] + delimiter + x[0]
@@ -629,15 +631,22 @@ if __name__ == '__main__':
         L = tf.placeholder(tf.int32, [None])
         Y = tf.placeholder(tf.int32, [None])
 
-        clf_logits, clf_loss, pred, acc = classifier_model(X, L, Y, train=True, reuse=False)
+        logits, clf_loss, pred, acc = classifier_model(X, L, Y, train=True, reuse=False)
         
         params = find_trainable_variables("model")
         grads = tf.gradients(clf_loss, params)
 
+        batch_size = 64
+        epochs = 5
+        n_update = len(range(0, len(trn_cl_len), batch_size))
+        n_updates_total = n_update * epochs
+
         lr_schedule_fn = partial(warmup_linear, warmup=lr_warmup)
         train_op = adam(params, grads, lr, lr_schedule_fn, n_updates_total, \
                     l2=l2, max_grad_norm=max_grad_norm, vector_l2=vector_l2)
+        # train_op = tf.train.AdamOptimizer().minimize(clf_loss)
         
+        train_cl( (trn_cl_x, trn_cl_y, trn_cl_len), (X,L,Y), train_op, (clf_loss, acc), epochs=5)
         eval_cl((val_cl_x, val_cl_len, val_cl_y), (X,L,Y), (pred, ))
 
     
