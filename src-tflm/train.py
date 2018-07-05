@@ -370,6 +370,9 @@ def classifier_model(X, L, Y, train=False, reuse=False):
         lm_losses = tf.reshape(lm_losses, [shape_list(X)[0], shape_list(X)[1]-1])
         lm_losses = tf.reduce_sum(lm_losses*M[:, 1:], 1)/tf.reduce_sum(M[:, 1:], 1)
 
+        # debug = L
+        # debug = tf.reduce_sum(M[:, 1:], 1)
+
         clf_h = tf.reshape(h, [-1, n_embd])
         clf_token = n_vocab - 3
         pool_idx = tf.cast(tf.argmax(tf.cast(tf.equal(X[:, :, 0], clf_token), tf.float32), 1), tf.int32)
@@ -401,7 +404,7 @@ def classifier_model(X, L, Y, train=False, reuse=False):
         else:
             total_loss = tf.reduce_mean(clf_losses)
 
-        return clf_logits, total_loss, pred, acc
+        return clf_logits, total_loss, pred, prob, acc#, debug
 
 def train_lm(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
     data_x, data_l = datas
@@ -439,6 +442,7 @@ def train_cl(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
 
     n = len(data_l)
     X, L, Y = holders
+    # cl_loss, cl_acc, debug = fetchs
     cl_loss, cl_acc = fetchs
 
     sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
@@ -458,11 +462,11 @@ def train_cl(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
                         x = data_x[i:i+batch_size]
                         l = data_l[i:i+batch_size]
                         y = data_y[i:i+batch_size]
-                        _, loss, acc = sess.run([train_op, cl_loss, cl_acc], feed_dict={X:x, L:l, Y:y})
-                        # print(loss)
+                        _, loss, acc= sess.run([train_op, cl_loss, cl_acc], feed_dict={X:x, L:l, Y:y})
+                        # print(d)
                         # exit()
-                        res_list[e][0] += loss/len(x)
-                        res_list[e][1] += acc/len(x)
+                        res_list[e][0] += loss
+                        res_list[e][1] += acc
                         ibar.set_postfix(loss=loss, acc=acc)
                 res_list[e][0] /= n_update
                 res_list[e][1] /= n_update
@@ -560,7 +564,7 @@ def dataset_cl(dir, mode='train'):
         X[i, 0, :m, 0] = x[0][:-1] + delimiter + x[1] # [:-1] remove eos token
         X[i, 1, :m, 0] = x[1][:-1] + delimiter + x[0]
     X[:, :, :, 1] = np.arange(n_vocab, n_vocab + maxlen_cl + 1) # positional feature
-    return X, Y, length
+    return X, length, Y
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -652,7 +656,7 @@ if __name__ == '__main__':
         L = tf.placeholder(tf.int32, [None])
         Y = tf.placeholder(tf.int32, [None])
 
-        logits, clf_loss, pred, acc = classifier_model(X, L, Y, train=True, reuse=False)
+        logits, clf_loss, pred, prob, acc = classifier_model(X, L, Y, train=True, reuse=False)
         
         params = find_trainable_variables("model")
         grads = tf.gradients(clf_loss, params)
@@ -665,7 +669,8 @@ if __name__ == '__main__':
                     l2=l2, max_grad_norm=max_grad_norm, vector_l2=vector_l2)
         # train_op = tf.train.AdamOptimizer().minimize(clf_loss)
         
-        train_cl( (trn_cl_x, trn_cl_y, trn_cl_len), (X,L,Y), train_op, (clf_loss, acc), epochs, batch_size)
+        train_cl( (trn_cl_x, trn_cl_y, trn_cl_len), (X,L,Y), train_op, \
+                  (clf_loss, acc), epochs, batch_size)
         eval_cl((val_cl_x, val_cl_len, val_cl_y), (X,L,Y), (pred, ))
 
     

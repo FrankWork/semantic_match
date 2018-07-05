@@ -95,6 +95,7 @@ def convert_tfrecords(txt_file, records_basename, num_dev=NUM_DEV, shuffle=True)
     lines = f.readlines()
   
   if shuffle:
+    random.seed(41)
     random.shuffle(lines)
 
   if num_dev != 0:
