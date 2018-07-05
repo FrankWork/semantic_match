@@ -495,8 +495,9 @@ def eval_cl(datas, holders, fetchs, batch_size=64):
             x = data_x[i:i+batch_size]
             l = data_l[i:i+batch_size]
             y = data_y[i:i+batch_size]
-            pred_mb = sess.run([pred], feed_dict={X:x, L:l, Y:y})
+            pred_mb = sess.run(pred, feed_dict={X:x, L:l, Y:y})
             res_list.append(pred_mb)
+    # print(res_list)
     y_pred = np.concatenate(res_list)
     y_true = data_y
     
@@ -573,6 +574,7 @@ if __name__ == '__main__':
     parser.add_argument('--maxlen_cl', type=int, default=167) # without delimiter
     parser.add_argument('--n_vocab', type=int, default=1425)
     parser.add_argument('--pretrain', action='store_true')
+    parser.add_argument('--eval', action='store_true')
     parser.add_argument("--gpu", type=str, default='0')
     parser.add_argument('--save_dir', type=str, default='save/')
     parser.add_argument('--seed', type=int, default=42)
@@ -649,8 +651,9 @@ if __name__ == '__main__':
         train_lm((trn_lm_x, trn_lm_len), (X, L), train_op, (lm_loss,), epochs, batch_size)
     else:
         cl_dir = pjoin(data_dir, 'cl')
-        trn_cl_x, trn_cl_y, trn_cl_len = dataset_cl(cl_dir, mode='train')
-        val_cl_x, val_cl_y, val_cl_len = dataset_cl(cl_dir, mode='test')
+        if not eval:
+            trn_cl_x, trn_cl_len, trn_cl_y = dataset_cl(cl_dir, mode='train')
+        val_cl_x, val_cl_len, val_cl_y = dataset_cl(cl_dir, mode='test')
 
         X = tf.placeholder(tf.int32, [None, 2, maxlen_cl+1, 2])
         L = tf.placeholder(tf.int32, [None])
@@ -658,19 +661,19 @@ if __name__ == '__main__':
 
         logits, clf_loss, pred, prob, acc = classifier_model(X, L, Y, train=True, reuse=False)
         
-        params = find_trainable_variables("model")
-        grads = tf.gradients(clf_loss, params)
+        if not eval:
+            params = find_trainable_variables("model")
+            grads = tf.gradients(clf_loss, params)
 
-        n_update = len(range(0, len(trn_cl_len), batch_size))
-        n_updates_total = n_update * epochs
+            n_update = len(range(0, len(trn_cl_len), batch_size))
+            n_updates_total = n_update * epochs
 
-        lr_schedule_fn = partial(warmup_linear, warmup=lr_warmup)
-        train_op = adam(params, grads, lr, lr_schedule_fn, n_updates_total, \
-                    l2=l2, max_grad_norm=max_grad_norm, vector_l2=vector_l2)
-        # train_op = tf.train.AdamOptimizer().minimize(clf_loss)
+            lr_schedule_fn = partial(warmup_linear, warmup=lr_warmup)
+            train_op = adam(params, grads, lr, lr_schedule_fn, n_updates_total, \
+                        l2=l2, max_grad_norm=max_grad_norm, vector_l2=vector_l2)
         
-        train_cl( (trn_cl_x, trn_cl_y, trn_cl_len), (X,L,Y), train_op, \
-                  (clf_loss, acc), epochs, batch_size)
+            train_cl( (trn_cl_x, trn_cl_len, trn_cl_y), (X,L,Y), train_op, \
+                    (clf_loss, acc), epochs, batch_size)
         eval_cl((val_cl_x, val_cl_len, val_cl_y), (X,L,Y), (pred, ))
 
     

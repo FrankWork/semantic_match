@@ -1,3 +1,11 @@
+
+
+```bash
+python split_data.py data/ process/
+python tok2id.py process/
+python train.py --pretrain --gpu 0
+```
+
 # finetune-transformer-lm
 Code and model for the paper "Improving Language Understanding by Generative Pre-Training"
 
@@ -8,10 +16,3 @@ Note: The code is currently non-deterministic due to various GPU ops. The median
 
 The ROCStories dataset can be downloaded from the associated [website](http://cs.rochester.edu/nlp/rocstories/).
 
-
-
-```bash
-python split_data.py data/ process/
-python tok2id.py process/
-python train.py --pretrain --gpu 0
-```

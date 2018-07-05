@@ -67,51 +67,69 @@ def aggregate(input_1, input_2, units, training, dropout_rate=0.5):
     x = highway(x, units, 'h2', training)
     return x   
 
+embed_dim     = 300
+hidden_size   = 1000
+input_keep    = 0.8
+learning_rate = 1e-3
+max_norm      = 10
+l2_coef       = 1e-5
+n_vocab       = 4000
+
+class LanguageModel(object):
+  def __init__(self, X, L, training=False):
+    K.set_learning_phase(training)
+
+    with tf.variable_scope('shared'):
+      with tf.device('/cpu:0'):
+        embedding = tf.get_variable("word2vec", [n_vocab, embed_dim])
+        x = tf.nn.embedding_lookup(embedding, X)
+      if training:
+        x = tf.nn.dropout(x, input_keep)
+      x = highway(x, embed_dim, 'highway_in', training)
+
+      # Encoding
+      x = biRNN(x, L, hidden_size, training, 0.1, "encode")
+    
+
 
 class ModelESIM(object):
-  def __init__(self, params, word2vec, features, labels, training=False):
+  def __init__(self, features, labels, training=False):
     len1, len2, s1, s2 = features
-    embed_dim     = params['embed_dim']
-    hidden_size   = 200
-    input_keep    = 0.8
-    learning_rate = 1e-3
-    max_norm      = 10
-    l2_coef       = 1e-5
-
     K.set_learning_phase(training)
     
-    with tf.device('/cpu:0'):
-      embedding = tf.get_variable("word2vec", initializer=word2vec, trainable=False)
-      s1 = tf.nn.embedding_lookup(embedding, s1)
-      s2 = tf.nn.embedding_lookup(embedding, s2)
-    if training:
-      s1 = tf.nn.dropout(s1, input_keep)
-      s2 = tf.nn.dropout(s2, input_keep)
+    with tf.variable_scope('model'):
+      with tf.device('/cpu:0'):
+        embedding = tf.get_variable("word2vec", [n_vocab, embed_dim])
+        s1 = tf.nn.embedding_lookup(embedding, s1)
+        s2 = tf.nn.embedding_lookup(embedding, s2)
+      if training:
+        s1 = tf.nn.dropout(s1, input_keep)
+        s2 = tf.nn.dropout(s2, input_keep)
 
-    s1 = highway(s1, embed_dim, 'highway_in', training)
-    s2 = highway(s2, embed_dim, 'highway_in', training, reuse=True)
+      s1 = highway(s1, embed_dim, 'highway_in', training)
+      s2 = highway(s2, embed_dim, 'highway_in', training, reuse=True)
 
-    # Encoding
-    q1_encoded = biRNN(s1, len1, hidden_size, training, 0.1, "encode")
-    q2_encoded = biRNN(s2, len2, hidden_size, training, 0.1, "encode", reuse=True)
-    
-    # Alignment
-    q1_aligned, q2_aligned = align(q1_encoded, q2_encoded)
-    
-    # Compare
-    q1_combined = concatenate([q1_encoded, q2_aligned, tf.abs(q1_encoded-q2_aligned), q1_encoded*q2_aligned])
-    q2_combined = concatenate([q2_encoded, q1_aligned, tf.abs(q2_encoded-q1_aligned), q2_encoded*q1_aligned])
+      # Encoding
+      q1_encoded = biRNN(s1, len1, hidden_size, training, 0.1, "encode")
+      q2_encoded = biRNN(s2, len2, hidden_size, training, 0.1, "encode", reuse=True)
+      
+      # Alignment
+      q1_aligned, q2_aligned = align(q1_encoded, q2_encoded)
+      
+      # Compare
+      q1_combined = concatenate([q1_encoded, q2_aligned, tf.abs(q1_encoded-q2_aligned), q1_encoded*q2_aligned])
+      q2_combined = concatenate([q2_encoded, q1_aligned, tf.abs(q2_encoded-q1_aligned), q2_encoded*q1_aligned])
 
-    q1_proj = proj(q1_combined, hidden_size, 0.5)
-    q2_proj = proj(q2_combined, hidden_size, 0.5)
+      q1_proj = proj(q1_combined, hidden_size, 0.5)
+      q2_proj = proj(q2_combined, hidden_size, 0.5)
 
-    q1_compare = biRNN(q1_proj, len1, hidden_size, training, 0.1, "compare")
-    q2_compare = biRNN(q2_proj, len2, hidden_size, training, 0.1, "compare", reuse=True)
-    
-    # Aggregate
-    x = aggregate(q1_compare, q2_compare, hidden_size, training)
-        
-    logits = tf.squeeze(Dense(1)(x))
+      q1_compare = biRNN(q1_proj, len1, hidden_size, training, 0.1, "compare")
+      q2_compare = biRNN(q2_proj, len2, hidden_size, training, 0.1, "compare", reuse=True)
+      
+      # Aggregate
+      x = aggregate(q1_compare, q2_compare, hidden_size, training)
+          
+      logits = tf.squeeze(Dense(1)(x))
 
     self.prob = tf.sigmoid(logits)
     self.pred = tf.rint(self.prob)

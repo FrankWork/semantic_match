@@ -60,6 +60,7 @@ bimpm 20    100   85     81.1  47.9 55   51.2/69.9  yes  no  all     no    1.10h
 bimpm 20    100   87     80    45.7 58.4 51.3/69.7  no   no  all     no    1.04h   
 qanet 20    100   82     82    51.2 57.4 54.1/71.7  no   no  all     no    0.47h   60.89 **lr decay** no fitting
 qanet 20    100   81     82.5  51.3 53.1 52.2/70.7  no   no  all     no           no ema
+tflm  5+5   64           83.6  57   33   42.7/67.9  yes              yes   
 
 # todo
 
