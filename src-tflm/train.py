@@ -376,19 +376,26 @@ def classifier_model(X, L, Y, train=False, reuse=False):
         clf_h = tf.gather(clf_h, tf.range(shape_list(X)[0], dtype=tf.int32)*(maxlen_cl+1)+pool_idx)
 
         clf_h = tf.reshape(clf_h, [-1, 2, n_embd])
+        clf_h = clf_h[:,0,:] + clf_h[:,1,:]
         if train and clf_pdrop > 0:
             shape = shape_list(clf_h)
             shape[1] = 1
             clf_h = tf.nn.dropout(clf_h, 1-clf_pdrop, shape)
-        clf_h = tf.reshape(clf_h, [-1, n_embd])
-        clf_logits = clf(clf_h, 1, train=train)
-        clf_logits = tf.reshape(clf_logits, [-1, 2])
+        # clf_h = tf.reshape(clf_h, [-1, n_embd])
+        clf_logits = tf.squeeze(clf(clf_h, 1, train=train))
+        # clf_logits = tf.reshape(clf_logits, [-1, 2])
 
-        pred = tf.cast(tf.argmax(tf.nn.softmax(clf_logits), axis=-1), tf.int32, name='pred')
+        # pred = tf.cast(tf.argmax(tf.nn.softmax(clf_logits), axis=-1), tf.int32, name='pred')
+        # acc = tf.reduce_mean(tf.to_float(tf.equal(pred, Y)))
+        prob = tf.sigmoid(clf_logits)
+        pred = tf.cast(tf.rint(prob), tf.int32)
         acc = tf.reduce_mean(tf.to_float(tf.equal(pred, Y)))
+        # acc = tf.metrics.accuracy(labels=Y, predictions=pred)
 
-        clf_losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=clf_logits, labels=Y)
-        
+        # clf_losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=clf_logits, labels=Y)
+        clf_losses = tf.nn.sigmoid_cross_entropy_with_logits(
+                                    labels=tf.to_float(Y), logits=clf_logits)
+
         if lm_coef > 0:
             total_loss = tf.reduce_mean(clf_losses) + lm_coef*tf.reduce_mean(lm_losses)
         else:
@@ -419,7 +426,7 @@ def train_lm(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
                         x = data_x[i:i+batch_size]
                         l = data_l[i:i+batch_size]
                         _, loss = sess.run([train_op, lm_loss], feed_dict={X:x, L:l})
-                        res_list[e] += loss/len(x)
+                        res_list[e] += loss
                         ibar.set_postfix(loss=loss)
                 res_list[e] /= n_update
     finally:
@@ -452,7 +459,7 @@ def train_cl(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
                         l = data_l[i:i+batch_size]
                         y = data_y[i:i+batch_size]
                         _, loss, acc = sess.run([train_op, cl_loss, cl_acc], feed_dict={X:x, L:l, Y:y})
-                        # print(acc)
+                        # print(loss)
                         # exit()
                         res_list[e][0] += loss/len(x)
                         res_list[e][1] += acc/len(x)
@@ -566,6 +573,8 @@ if __name__ == '__main__':
     parser.add_argument('--save_dir', type=str, default='save/')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--n_embd', type=int, default=300)
+    parser.add_argument('--epochs', type=int, default=5)
+    parser.add_argument('--batch_size', type=int, default=64)
 
     # parser.add_argument('--desc', type=str)
     # parser.add_argument('--dataset', type=str)
@@ -573,8 +582,8 @@ if __name__ == '__main__':
     # parser.add_argument('--submission_dir', type=str, default='submission/')
     # parser.add_argument('--submit', action='store_true')
     # parser.add_argument('--analysis', action='store_true')
-    parser.add_argument('--n_iter', type=int, default=3)
-    parser.add_argument('--n_batch', type=int, default=8)
+    # parser.add_argument('--n_iter', type=int, default=3)
+    # parser.add_argument('--n_batch', type=int, default=8)
     parser.add_argument('--max_grad_norm', type=int, default=1)
     parser.add_argument('--lr', type=float, default=6.25e-5)
     parser.add_argument('--lr_warmup', type=float, default=0.002)
@@ -617,11 +626,23 @@ if __name__ == '__main__':
         L = tf.placeholder(tf.int32, [None])
 
         lm_loss = language_model(X, L, train=True, reuse=False)
-        train_op = tf.train.AdamOptimizer().minimize(lm_loss)
+
+        params = find_trainable_variables("model")
+        grads = tf.gradients(lm_loss, params)
+
+        n_update = len(range(0, len(trn_lm_len), batch_size))
+        n_updates_total = n_update * epochs
+
+        lr = 2.5e-4
+        lr_schedule_fn = partial(warmup_cosine, warmup=lr_warmup)
+
+        train_op = adam(params, grads, lr, lr_schedule_fn, n_updates_total, \
+                    l2=l2, max_grad_norm=max_grad_norm, vector_l2=vector_l2)
+        # train_op = tf.train.AdamOptimizer().minimize(lm_loss)
         print('build graph done.')
         sys.stdout.flush()
 
-        train_lm((trn_lm_x, trn_lm_len), (X, L), train_op, (lm_loss,), epochs=20, batch_size=64)
+        train_lm((trn_lm_x, trn_lm_len), (X, L), train_op, (lm_loss,), epochs, batch_size)
     else:
         cl_dir = pjoin(data_dir, 'cl')
         trn_cl_x, trn_cl_y, trn_cl_len = dataset_cl(cl_dir, mode='train')
@@ -636,8 +657,6 @@ if __name__ == '__main__':
         params = find_trainable_variables("model")
         grads = tf.gradients(clf_loss, params)
 
-        batch_size = 64
-        epochs = 5
         n_update = len(range(0, len(trn_cl_len), batch_size))
         n_updates_total = n_update * epochs
 
@@ -646,7 +665,7 @@ if __name__ == '__main__':
                     l2=l2, max_grad_norm=max_grad_norm, vector_l2=vector_l2)
         # train_op = tf.train.AdamOptimizer().minimize(clf_loss)
         
-        train_cl( (trn_cl_x, trn_cl_y, trn_cl_len), (X,L,Y), train_op, (clf_loss, acc), epochs=5)
+        train_cl( (trn_cl_x, trn_cl_y, trn_cl_len), (X,L,Y), train_op, (clf_loss, acc), epochs, batch_size)
         eval_cl((val_cl_x, val_cl_len, val_cl_y), (X,L,Y), (pred, ))
 
     
