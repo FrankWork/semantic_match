@@ -1,7 +1,8 @@
 import tensorflow as tf
 import numpy as np
-
-import numpy as np
+import os
+import random
+from tqdm import trange
 from keras.layers import *
 from keras.activations import softmax
 
@@ -156,7 +157,7 @@ def assign_to_gpu(gpu=0, ps_dev="/device:CPU:0"):
             return "/gpu:%d" % gpu
     return _assign
 
-def mgpu_train_lm(in_tensors):
+def mgpu_train_op_lm(in_tensors):
     gpu_ops = []
     gpu_grads = []
 
@@ -165,6 +166,7 @@ def mgpu_train_lm(in_tensors):
         0.001 / tf.log(999.) * tf.log(tf.cast(global_step, tf.float32) + 1))
     optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
 
+    # divide evenly
     split_ts = (tf.split(x, n_gpu, 0) for x in in_tensors)
     for i, xs in enumerate(zip(*split_ts)): # n_gpu times
         do_reuse = True if i > 0 else None
@@ -251,25 +253,75 @@ class ModelESIM(object):
 
 pjoin = os.path.join
 
-def dataset_lm(dir, mode='train'):
-    path = pjoin(dir, '{0}_ids.npy'.format(mode))
-    data = np.load(path)
-    n = len(data)
+class DatasetLM(object):
+    def __init__(self, dir, mode='train', bptt=90):
+        path = os.path.join(dir, '{0}_ids.npy'.format(mode))
+        self.array = np.load(path)
+        self.n_array = len(self.array)
+        self.ibar = None
+        self.bptt = bptt
 
-    X = np.zeros((n, maxlen_lm, 2), dtype=np.int32)
-    length = np.zeros(n, dtype=np.int32)
+    def maxlen(self):
+        return self.bptt + 5*5
+
+    def iter(self, epochs, batch_size):
+        maxlen = self.maxlen()
+        ebar = trange(epochs, desc='Epoch')
+        for e in ebar:
+            data = random.shuffle(self.array)
+            data = np.concatenate(data)
+            n_batch = int(data.shape[0]/batch_size)
+            data = np.reshape(data[:n_batch*batch_size], [batch_size, -1])
+
+            idx = 0
+            self.ibar = trange(n_batch, desc='Iter')
+            for i in self.ibar:
+                bptt = self.bptt if np.random.random() < 0.95 else self.bptt / 2.
+                seq_len = max(5, int(np.random.normal(bptt, 5)))
+                x = data[:, idx:idx+seq_len]
+                seq_len = min(x.shape[1], seq_len)
+                x = np.pad(x, ((0,0), (0, maxlen-seq_len)), 'constant')
+                yield x, seq_len
     
-    for i, x in enumerate(data):
-        m = len(x)
-        length[i] = m
-        X[i, :m, 0] = x
-    X[:, :, 1] = np.arange(n_vocab, n_vocab + maxlen_lm)# positional feature
-    return X, length
+    def set_postfix(self, **kwargs):
+        self.ibar.set_postfix(**kwargs)
+
+
+def train_lm(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
+    data_x, data_l = datas
+
+    n = len(data_l)
+    X, L = holders
+    lm_loss, = fetchs
+
+    var_list = find_trainable_variables('model')
+    sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
+    sess.run(tf.global_variables_initializer())
+
+    res_list = [0. for _ in range(epochs)]
+    n_update = len(range(0, n, batch_size))
+
+    try:
+        with trange(epochs, desc='Epoch') as ebar:
+            for e in ebar:
+                data_x, data_l = shuffle(data_x, data_l)
+                with trange(0, n, batch_size, desc='Iter') as ibar:
+                    for i in ibar:
+                        x = data_x[i:i+batch_size]
+                        l = data_l[i:i+batch_size]
+                        _, loss = sess.run([train_op, lm_loss], feed_dict={X:x, L:l})
+                        res_list[e] += loss
+                        ibar.set_postfix(loss=loss)
+                res_list[e] /= n_update
+    finally:
+        save_params(save_dir, 'lm_params', sess, var_list)
+        for i, res in enumerate(res_list):
+            print('{0}\t{1}'.format(i, res))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_dir', type=str, default='process/')
-    parser.add_argument('--maxlen_lm', type=int, default=150)
+    # parser.add_argument('--maxlen_lm', type=int, default=150)
     parser.add_argument('--maxlen_cl', type=int, default=87) # without delimiter
     parser.add_argument('--n_vocab', type=int, default=3005)
     parser.add_argument('--pretrain', action='store_true')
@@ -296,15 +348,15 @@ if __name__ == '__main__':
 
     if pretrain:
         lm_dir = pjoin(data_dir, 'lm')
-        trn_lm_x, trn_lm_len = dataset_lm(lm_dir, mode='train')
+        # trn_lm_x, trn_lm_len = dataset_lm(lm_dir, mode='train')
         # val_lm_x, val_lm_len = dataset_lm(lm_dir, mode='test')
-        print('load data done.')
+        # print('load data done.')
+        trn_lm = DatasetLM(lm_dir)
 
-        X = tf.placeholder(tf.int32, [None, maxlen_lm, 2])
-        L = tf.placeholder(tf.int32, [None])
+        X = tf.placeholder(tf.int32, [None, trn_lm.maxlen()])
+        L = tf.placeholder(tf.int32, [])
 
-        lm_loss = language_model((X, L), training=True, reuse=False)
-        train_op = mgpu_train_lm((X,L))
+        train_and_tensors = mgpu_train_op_lm((X,L))
         print('build graph done.')
         sys.stdout.flush()
 
