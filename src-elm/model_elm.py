@@ -249,14 +249,29 @@ class ModelESIM(object):
                                                   global_step=self.global_step)
         # self.train_op = optimizer.minimize(self.loss, global_step=self.global_step)
 
+pjoin = os.path.join
 
+def dataset_lm(dir, mode='train'):
+    path = pjoin(dir, '{0}_ids.npy'.format(mode))
+    data = np.load(path)
+    n = len(data)
+
+    X = np.zeros((n, maxlen_lm, 2), dtype=np.int32)
+    length = np.zeros(n, dtype=np.int32)
+    
+    for i, x in enumerate(data):
+        m = len(x)
+        length[i] = m
+        X[i, :m, 0] = x
+    X[:, :, 1] = np.arange(n_vocab, n_vocab + maxlen_lm)# positional feature
+    return X, length
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_dir', type=str, default='process/')
-    parser.add_argument('--maxlen_lm', type=int, default=155)
-    parser.add_argument('--maxlen_cl', type=int, default=167) # without delimiter
-    parser.add_argument('--n_vocab', type=int, default=1425)
+    parser.add_argument('--maxlen_lm', type=int, default=150)
+    parser.add_argument('--maxlen_cl', type=int, default=87) # without delimiter
+    parser.add_argument('--n_vocab', type=int, default=3005)
     parser.add_argument('--pretrain', action='store_true')
     parser.add_argument('--eval', action='store_true')
     parser.add_argument("--gpu", type=str, default='0')
@@ -277,7 +292,7 @@ if __name__ == '__main__':
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu
 
     # load data
-    n_position = max(maxlen_lm, maxlen_cl+1)
+    n_position = max(maxlen_lm, maxlen_cl)
 
     if pretrain:
         lm_dir = pjoin(data_dir, 'lm')
@@ -288,20 +303,8 @@ if __name__ == '__main__':
         X = tf.placeholder(tf.int32, [None, maxlen_lm, 2])
         L = tf.placeholder(tf.int32, [None])
 
-        lm_loss = language_model(X, L, train=True, reuse=False)
-
-        params = find_trainable_variables("model")
-        grads = tf.gradients(lm_loss, params)
-
-        n_update = len(range(0, len(trn_lm_len), batch_size))
-        n_updates_total = n_update * epochs
-
-        lr = 2.5e-4
-        lr_schedule_fn = partial(warmup_cosine, warmup=lr_warmup)
-
-        train_op = adam(params, grads, lr, lr_schedule_fn, n_updates_total, \
-                    l2=l2, max_grad_norm=max_grad_norm, vector_l2=vector_l2)
-        # train_op = tf.train.AdamOptimizer().minimize(lm_loss)
+        lm_loss = language_model((X, L), training=True, reuse=False)
+        train_op = mgpu_train_lm((X,L))
         print('build graph done.')
         sys.stdout.flush()
 
