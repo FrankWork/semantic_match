@@ -324,11 +324,13 @@ def clf(x, ny, w_init=tf.random_normal_initializer(stddev=0.02), b_init=tf.const
         b = tf.get_variable("b", [ny], initializer=b_init)
         return tf.matmul(x, w)+b
 
-def language_model(X, L, train=False, reuse=False):
+def language_model(in_tensors, train=False, reuse=False):
+    X, L = in_tensors
     with tf.variable_scope('model', reuse=reuse):
-        
-        M = tf.to_float(tf.sequence_mask(L, maxlen_lm)) # (n, maxlen)
+        maxlen_lm = lm_maxlen(bptt)
+        n_position = maxlen_lm
 
+        M = tf.to_float(tf.sequence_mask(L, maxlen_lm)) # (n, maxlen)
         we = tf.get_variable("we", [n_vocab+n_position, n_embd], initializer=tf.random_normal_initializer(stddev=0.02))
         we = dropout(we, embd_pdrop, train)
 
@@ -406,7 +408,7 @@ def classifier_model(X, L, Y, train=False, reuse=False):
 
         return clf_logits, total_loss, pred, prob, acc#, debug
 
-def train_lm(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
+def train_lm_v0(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
     data_x, data_l = datas
 
     n = len(data_l)
@@ -432,6 +434,30 @@ def train_lm(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
                         res_list[e] += loss
                         ibar.set_postfix(loss=loss)
                 res_list[e] /= n_update
+    finally:
+        save_params(save_dir, 'lm_params', sess, var_list)
+        for i, res in enumerate(res_list):
+            print('{0}\t{1}'.format(i, res))
+
+def train_lm(data, holders, train_and_tensors, epochs, batch_size):
+    train_op, lm_loss = train_and_tensors
+    X, L = holders
+
+    var_list = find_trainable_variables('model')
+    sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True, log_device_placement=False))
+    sess.run(tf.global_variables_initializer())
+
+    res_list = [0. for _ in range(epochs)]
+
+    try:
+        for i, (x, l) in enumerate(data.iter(epochs, batch_size)):
+            _, loss = sess.run([train_op, lm_loss], feed_dict={X:x, L:l})
+            res_list[data.current_epoch()] += loss
+            data.set_postfix(loss=loss)
+
+            if i!=0 and i%data.n_batch_per_epoch() == 0:
+                # res_list[data.current_epoch()] /= data.n_batch_per_epoch()
+                save_params(save_dir, 'lm_params.%d'%data.current_epoch(), sess, var_list)
     finally:
         save_params(save_dir, 'lm_params', sess, var_list)
         for i, res in enumerate(res_list):
@@ -532,6 +558,90 @@ def load_params(dir, file, sess, var_list):
 
 pjoin = os.path.join
 
+def lm_maxlen(bptt):
+    return bptt+5*5
+
+class DatasetLM(object):
+    def __init__(self, dir, limit=None, mode='train', bptt=250):
+        path = os.path.join(dir, '{0}_ids.npy'.format(mode))
+        self.array = np.load(path)
+        if limit:
+            self.array = self.array[:limit]
+        self.n_array = len(self.array)
+        self.ibar = None
+        self.bptt = bptt
+        self.nbatch = None
+        self._current_epoch = None
+
+    def maxlen(self):
+        return lm_maxlen(self.bptt)
+    
+    def n_batch_per_epoch(self):
+        if self.nbatch is None:
+            data = np.concatenate(self.array)
+            self.nbatch = int(data.shape[0]/batch_size)
+        return self.nbatch
+    
+    def current_epoch(self):
+        return self._current_epoch
+
+    def iter(self, epochs, batch_size):
+        maxlen = self.maxlen()
+        ebar = trange(epochs, desc='Epoch')
+        for e in ebar:
+            self._current_epoch = e
+            random.shuffle(self.array)
+            data = np.concatenate(self.array)
+            self.nbatch = int(data.shape[0]/batch_size)
+            data = np.reshape(data[:self.nbatch*batch_size], [batch_size, -1])
+
+            idx = 0
+            self.ibar = trange(self.nbatch, desc='Iter')
+            for i in self.ibar:
+                bptt = self.bptt if np.random.random() < 0.95 else self.bptt / 2.
+                seq_len = max(5, int(np.random.normal(bptt, 5)))
+                x = data[:, idx:idx+seq_len]
+                seq_len = min(x.shape[1], seq_len)
+                x = np.pad(x, ((0,0), (0, maxlen-seq_len)), 'constant')
+                p = np.tile(np.expand_dims( 
+                                np.arange(n_vocab, n_vocab + maxlen), 
+                                axis=0),
+                            [batch_size, 1]) # (batch, len), positional feat
+                xp = np.stack((x,p), axis=-1) # (batch, len, 2)
+                l = np.tile(np.reshape(seq_len, [1]), [x.shape[0]])
+                yield xp, l
+    
+    def set_postfix(self, **kwargs):
+        self.ibar.set_postfix(**kwargs)
+
+def mgpu_train_op_lm(in_tensors, n_gpu, n_updates_total):
+    gpu_tensors = []
+    gpu_grads = []
+
+    global_step = tf.train.get_or_create_global_step()
+
+    # divide evenly
+    split_ts = (tf.split(x, n_gpu, 0) for x in in_tensors)
+    for i, xs in enumerate(zip(*split_ts)): # n_gpu times
+        do_reuse = True if i > 0 else None
+        with tf.device(assign_to_gpu(i, "/gpu:0")), tf.variable_scope(tf.get_variable_scope(), reuse=do_reuse):
+            lm_loss = language_model(xs, train=True, reuse=do_reuse)
+
+            params = find_trainable_variables("model")
+            grads = tf.gradients(lm_loss, params)
+            grads = list(zip(grads, params))
+            gpu_grads.append(grads)
+            gpu_tensors.append([lm_loss])
+    tensors = [tf.stack(op, 0) for op in zip(*gpu_tensors)]
+    tensors = [tf.reduce_mean(op) for op in tensors]
+    grads = average_grads(gpu_grads)
+    grads = [g for g, p in grads]
+    
+    lr_schedule_fn = partial(warmup_linear, warmup=lr_warmup)
+    train_op = adam(params, grads, lr, lr_schedule_fn, n_updates_total, \
+                        l2=l2, max_grad_norm=max_grad_norm, vector_l2=vector_l2)
+    return [train_op]+tensors
+
 def dataset_lm(dir, mode='train'):
     path = pjoin(dir, '{0}_ids.npy'.format(mode))
     data = np.load(path)
@@ -567,33 +677,25 @@ def dataset_cl(dir, mode='train'):
     X[:, :, :, 1] = np.arange(n_vocab, n_vocab + maxlen_cl + 1) # positional feature
     return X, length, Y
 
-if __name__ == '__main__':
+def get_argparse():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_dir', type=str, default='process/')
-    parser.add_argument('--maxlen_lm', type=int, default=155)
+    parser.add_argument('--data_dir', type=str, default='process_wb/')
+    parser.add_argument('--bptt', type=int, default=250)
     parser.add_argument('--maxlen_cl', type=int, default=167) # without delimiter
-    parser.add_argument('--n_vocab', type=int, default=1425)
+    parser.add_argument('--n_vocab', type=int, default=3005)
     parser.add_argument('--pretrain', action='store_true')
     parser.add_argument('--eval', action='store_true')
     parser.add_argument("--gpu", type=str, default='0')
-    parser.add_argument('--save_dir', type=str, default='save/')
+    parser.add_argument('--save_dir', type=str, default='save_wb/')
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--n_embd', type=int, default=300)
+    parser.add_argument('--n_embd', type=int, default=768)
     parser.add_argument('--epochs', type=int, default=5)
     parser.add_argument('--batch_size', type=int, default=64)
 
-    # parser.add_argument('--desc', type=str)
-    # parser.add_argument('--dataset', type=str)
-    # parser.add_argument('--log_dir', type=str, default='log/')
-    # parser.add_argument('--submission_dir', type=str, default='submission/')
-    # parser.add_argument('--submit', action='store_true')
-    # parser.add_argument('--analysis', action='store_true')
-    # parser.add_argument('--n_iter', type=int, default=3)
-    # parser.add_argument('--n_batch', type=int, default=8)
     parser.add_argument('--max_grad_norm', type=int, default=1)
     parser.add_argument('--lr', type=float, default=6.25e-5)
     parser.add_argument('--lr_warmup', type=float, default=0.002)
-    parser.add_argument('--n_head', type=int, default=10)
+    parser.add_argument('--n_head', type=int, default=12)
     parser.add_argument('--n_layer', type=int, default=12)
     parser.add_argument('--embd_pdrop', type=float, default=0.1)
     parser.add_argument('--attn_pdrop', type=float, default=0.1)
@@ -601,15 +703,14 @@ if __name__ == '__main__':
     parser.add_argument('--clf_pdrop', type=float, default=0.1)
     parser.add_argument('--l2', type=float, default=0.01)
     parser.add_argument('--vector_l2', action='store_true')
-    parser.add_argument('--n_gpu', type=int, default=4)
     parser.add_argument('--afn', type=str, default='gelu')
-    # parser.add_argument('--lr_schedule', type=str, default='warmup_linear')
-    # parser.add_argument('--encoder_path', type=str, default='model/encoder_bpe_40000.json')
-    # parser.add_argument('--bpe_path', type=str, default='model/vocab_40000.bpe')
-    # parser.add_argument('--n_transfer', type=int, default=12)
     parser.add_argument('--lm_coef', type=float, default=0.5)
     
     args = parser.parse_args()
+    return args
+
+if __name__ == '__main__':
+    args = get_argparse()
     print(args)
     globals().update(args.__dict__)
     random.seed(seed)         # global var seed
@@ -618,37 +719,25 @@ if __name__ == '__main__':
 
     # logger = ResultLogger(path=os.path.join(log_dir, '{}.jsonl'.format(desc)), **args.__dict__)
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu
-
+    n_gpu = len(gpu.split(','))
     # load data
-    n_position = max(maxlen_lm, maxlen_cl+1)
+    # n_position = lm_maxlen(bptt)
 
     if pretrain:
         lm_dir = pjoin(data_dir, 'lm')
-        trn_lm_x, trn_lm_len = dataset_lm(lm_dir, mode='train')
-        val_lm_x, val_lm_len = dataset_lm(lm_dir, mode='test')
+        trn_lm = DatasetLM(lm_dir, limit=None, mode='train', bptt=bptt)
         print('load data done.')
 
-        X = tf.placeholder(tf.int32, [None, maxlen_lm, 2])
-        L = tf.placeholder(tf.int32, [None])
+        X = tf.placeholder(tf.int32, [batch_size, lm_maxlen(bptt), 2])
+        L = tf.placeholder(tf.int32, [batch_size])
 
-        lm_loss = language_model(X, L, train=True, reuse=False)
-
-        params = find_trainable_variables("model")
-        grads = tf.gradients(lm_loss, params)
-
-        n_update = len(range(0, len(trn_lm_len), batch_size))
-        n_updates_total = n_update * epochs
-
-        lr = 2.5e-4
-        lr_schedule_fn = partial(warmup_cosine, warmup=lr_warmup)
-
-        train_op = adam(params, grads, lr, lr_schedule_fn, n_updates_total, \
-                    l2=l2, max_grad_norm=max_grad_norm, vector_l2=vector_l2)
-        # train_op = tf.train.AdamOptimizer().minimize(lm_loss)
+        # lm_loss = language_model(X, L, train=True, reuse=False)
+        n_iter = trn_lm.n_batch_per_epoch()*epochs
+        train_and_tensors = mgpu_train_op_lm((X,L), n_gpu, n_iter)
         print('build graph done.')
         sys.stdout.flush()
 
-        train_lm((trn_lm_x, trn_lm_len), (X, L), train_op, (lm_loss,), epochs, batch_size)
+        train_lm(trn_lm, (X, L), train_and_tensors, epochs, batch_size)
     else:
         cl_dir = pjoin(data_dir, 'cl')
         if not eval:
