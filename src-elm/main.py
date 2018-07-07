@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 import os
 import random
+import argparse
 from tqdm import trange
 from keras.layers import *
 from keras.activations import softmax
@@ -11,6 +12,7 @@ def biRNN(inputs, length, hidden_size, training, dropout_rate=0.1, name="biRNN",
     cell = tf.nn.rnn_cell.BasicLSTMCell
     fw_cell = cell(hidden_size, name='fw')
     bw_cell = cell(hidden_size, name='bw')
+
     if training:
       fw_cell = tf.nn.rnn_cell.DropoutWrapper(fw_cell, output_keep_prob=(1 - dropout_rate))
       bw_cell = tf.nn.rnn_cell.DropoutWrapper(bw_cell, output_keep_prob=(1 - dropout_rate))
@@ -75,7 +77,6 @@ learning_rate = 1e-3
 max_norm      = 10
 l2_coef       = 1e-5
 n_vocab       = 4000
-n_gpu         = 4
 
 def shape_list(x):
   """
@@ -89,7 +90,7 @@ def language_model(in_tensors, training=False, reuse=None):
   X, L = in_tensors
   K.set_learning_phase(training)
 
-  M = tf.to_float(tf.sequence_mask(L))
+  M = tf.to_float(tf.sequence_mask(L, X.shape.as_list()[-1]))
 
   with tf.variable_scope('shared', reuse=reuse):
     with tf.device('/cpu:0'):
@@ -102,7 +103,8 @@ def language_model(in_tensors, training=False, reuse=None):
     # Encoding
     h = biRNN(x, L, embed_dim, training, 0.1, "encode")
 
-    lm_h = tf.reshape(h[:, :-1], [-1, embed_dim]) # remove the last token of lm_h
+    #FIXME dim not match
+    lm_h = tf.reshape(h[:, :-1], [-1, 2*embed_dim]) # remove the last token of lm_h
     lm_logits = tf.matmul(lm_h, embedding, transpose_b=True)
     lm_losses = tf.nn.sparse_softmax_cross_entropy_with_logits(
                                     logits=lm_logits, 
@@ -157,7 +159,7 @@ def assign_to_gpu(gpu=0, ps_dev="/device:CPU:0"):
             return "/gpu:%d" % gpu
     return _assign
 
-def mgpu_train_op_lm(in_tensors):
+def mgpu_train_op_lm(in_tensors, n_gpu):
     gpu_ops = []
     gpu_grads = []
 
@@ -177,6 +179,7 @@ def mgpu_train_op_lm(in_tensors):
             grads, _ = tf.clip_by_global_norm(grads, max_norm)
             gpu_grads.append( list(zip(grads, params)) )
             gpu_ops.append([lm_loss])
+
     tensors = [tf.concat(op, axis=0) for op in zip(*gpu_ops)]
     grad_var = average_grads(gpu_grads)
 
@@ -254,80 +257,108 @@ class ModelESIM(object):
 pjoin = os.path.join
 
 class DatasetLM(object):
-    def __init__(self, dir, mode='train', bptt=90):
+    def __init__(self, dir, limit=None, mode='train', bptt=90):
         path = os.path.join(dir, '{0}_ids.npy'.format(mode))
         self.array = np.load(path)
+        if limit:
+            self.array = self.array[:limit]
         self.n_array = len(self.array)
         self.ibar = None
         self.bptt = bptt
+        self.nbatch = None
+        self._current_epoch = None
 
     def maxlen(self):
         return self.bptt + 5*5
+    
+    def n_batch_per_epoch(self):
+        return self.nbatch
+    
+    def current_epoch(self):
+        return self._current_epoch
 
     def iter(self, epochs, batch_size):
         maxlen = self.maxlen()
         ebar = trange(epochs, desc='Epoch')
         for e in ebar:
+            self._current_epoch = e
             data = random.shuffle(self.array)
             data = np.concatenate(data)
-            n_batch = int(data.shape[0]/batch_size)
-            data = np.reshape(data[:n_batch*batch_size], [batch_size, -1])
+            self.nbatch = int(data.shape[0]/batch_size)
+            data = np.reshape(data[:self.nbatch*batch_size], [batch_size, -1])
 
             idx = 0
-            self.ibar = trange(n_batch, desc='Iter')
+            self.ibar = trange(self.nbatch, desc='Iter')
             for i in self.ibar:
                 bptt = self.bptt if np.random.random() < 0.95 else self.bptt / 2.
                 seq_len = max(5, int(np.random.normal(bptt, 5)))
                 x = data[:, idx:idx+seq_len]
                 seq_len = min(x.shape[1], seq_len)
                 x = np.pad(x, ((0,0), (0, maxlen-seq_len)), 'constant')
-                yield x, seq_len
+                l = np.tile(np.reshape(seq_len, [1]), [x.shape[0]])
+                yield x, l
     
     def set_postfix(self, **kwargs):
         self.ibar.set_postfix(**kwargs)
 
+def find_trainable_variables(key, exclude=None):
+    trainable_variables = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, ".*{}.*".format(key))
+    if exclude is not None:
+        trainable_variables = [
+            var for var in trainable_variables
+            if exclude not in var.name
+        ]
+    return trainable_variables
 
-def train_lm(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
-    data_x, data_l = datas
-
-    n = len(data_l)
+def train_lm(data, holders, train_and_tensors, epochs, batch_size):
+    train_op, lm_loss = train_and_tensors
     X, L = holders
-    lm_loss, = fetchs
 
-    var_list = find_trainable_variables('model')
+    var_list = find_trainable_variables('shared')
     sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
     sess.run(tf.global_variables_initializer())
 
     res_list = [0. for _ in range(epochs)]
-    n_update = len(range(0, n, batch_size))
 
     try:
-        with trange(epochs, desc='Epoch') as ebar:
-            for e in ebar:
-                data_x, data_l = shuffle(data_x, data_l)
-                with trange(0, n, batch_size, desc='Iter') as ibar:
-                    for i in ibar:
-                        x = data_x[i:i+batch_size]
-                        l = data_l[i:i+batch_size]
-                        _, loss = sess.run([train_op, lm_loss], feed_dict={X:x, L:l})
-                        res_list[e] += loss
-                        ibar.set_postfix(loss=loss)
-                res_list[e] /= n_update
+        for i, x, l in enumerate(data.iter(epochs, batch_size)):
+            _, loss = sess.run([train_op, lm_loss], feed_dict={X:x, L:l})
+            res_list[e] += loss
+            data.set_postfix(loss=loss)
+
+            if i!=0 and i%data.n_batch_per_epoch == 0:
+                res_list[data.current_epoch()] /= data.n_batch_per_epoch()
+                save_params(save_dir, 'lm_params.%d'%data.current_epoch(), sess, var_list)
     finally:
         save_params(save_dir, 'lm_params', sess, var_list)
         for i, res in enumerate(res_list):
             print('{0}\t{1}'.format(i, res))
 
+def save_params(dir, file, sess, var_list):
+    if not os.path.exists(dir):
+        os.makedirs(dir)
+    
+    saver = tf.train.Saver(var_list)
+    saver.save(sess, os.path.join(dir, file))
+
+def load_params(dir, file, sess, var_list):
+    path = os.path.join(dir, file)
+    # assert os.path.exists(path), 'path {0} not exists'.format(path)
+    
+    saver = tf.train.Saver(var_list)
+    saver.restore(sess, path)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_dir', type=str, default='process/')
+    parser.add_argument('--data_dir', type=str, default='process_wb/')
     # parser.add_argument('--maxlen_lm', type=int, default=150)
     parser.add_argument('--maxlen_cl', type=int, default=87) # without delimiter
     parser.add_argument('--n_vocab', type=int, default=3005)
     parser.add_argument('--pretrain', action='store_true')
     parser.add_argument('--eval', action='store_true')
-    parser.add_argument("--gpu", type=str, default='0')
-    parser.add_argument('--save_dir', type=str, default='save/')
+    parser.add_argument("--gpu", type=str, default='0') #0,1
+    parser.add_argument('--save_dir', type=str, default='save_elm/')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--n_embd', type=int, default=300)
     parser.add_argument('--epochs', type=int, default=5)
@@ -342,25 +373,26 @@ if __name__ == '__main__':
 
     # logger = ResultLogger(path=os.path.join(log_dir, '{}.jsonl'.format(desc)), **args.__dict__)
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu
+    n_gpu = len(gpu.split(','))
+    print('n_gpu: %d' % n_gpu)
 
-    # load data
-    n_position = max(maxlen_lm, maxlen_cl)
+    assert batch_size%n_gpu == 0 
 
     if pretrain:
         lm_dir = pjoin(data_dir, 'lm')
         # trn_lm_x, trn_lm_len = dataset_lm(lm_dir, mode='train')
         # val_lm_x, val_lm_len = dataset_lm(lm_dir, mode='test')
         # print('load data done.')
-        trn_lm = DatasetLM(lm_dir)
+        trn_lm = DatasetLM(lm_dir, limit=1000)
 
-        X = tf.placeholder(tf.int32, [None, trn_lm.maxlen()])
-        L = tf.placeholder(tf.int32, [])
+        X = tf.placeholder(tf.int32, [batch_size, trn_lm.maxlen()])
+        L = tf.placeholder(tf.int32, [batch_size])
 
-        train_and_tensors = mgpu_train_op_lm((X,L))
+        train_and_tensors = mgpu_train_op_lm((X,L), n_gpu)
         print('build graph done.')
         sys.stdout.flush()
 
-        train_lm((trn_lm_x, trn_lm_len), (X, L), train_op, (lm_loss,), epochs, batch_size)
+        train_lm(trn_lm, (X, L), train_and_tensors, epochs, batch_size)
     else:
         cl_dir = pjoin(data_dir, 'cl')
         if not eval:
