@@ -350,6 +350,8 @@ def language_model(in_tensors, train=False, reuse=False):
 
 def classifier_model(X, L, Y, train=False, reuse=False):
     with tf.variable_scope('model', reuse=reuse):
+        maxlen_lm = lm_maxlen(bptt)
+        n_position = maxlen_lm
         
         l2d = tf.tile(tf.expand_dims(L, axis=1), [1, 2])    # (n, 2)
         M = tf.to_float(tf.sequence_mask(l2d, maxlen_cl+1)) # (n, 2, maxlen)
@@ -449,6 +451,7 @@ def train_lm(data, holders, train_and_tensors, epochs, batch_size):
 
     res_list = [0. for _ in range(epochs)]
 
+    #FIXME: try except wont catch the `kill` command signal
     try:
         for i, (x, l) in enumerate(data.iter(epochs, batch_size)):
             _, loss = sess.run([train_op, lm_loss], feed_dict={X:x, L:l})
@@ -496,7 +499,10 @@ def train_cl(datas, holders, train_op, fetchs, epochs=20, batch_size=64):
                         ibar.set_postfix(loss=loss, acc=acc)
                 res_list[e][0] /= n_update
                 res_list[e][1] /= n_update
+                var_list = find_trainable_variables('model')
+                save_params(save_dir, 'cl_params_%d'%e, sess, var_list)
     finally:
+        print('save params')
         var_list = find_trainable_variables('model')
         save_params(save_dir, 'cl_params', sess, var_list)
         for i, res in enumerate(res_list):
@@ -733,6 +739,7 @@ if __name__ == '__main__':
 
         # lm_loss = language_model(X, L, train=True, reuse=False)
         n_iter = trn_lm.n_batch_per_epoch()*epochs
+        #FIXME cosine lr
         train_and_tensors = mgpu_train_op_lm((X,L), n_gpu, n_iter)
         print('build graph done.')
         sys.stdout.flush()

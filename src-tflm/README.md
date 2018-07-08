@@ -13,6 +13,8 @@ python tok2id.py process_wb/ 3000 1000
 python train.py --pretrain --lr 2.5e-4 --gpu 0 --epochs 2 --data_dir process
 
 python train.py --pretrain --lr 2.5e-4 --gpu 0,2,3  --epochs 5 --batch_size 192  --n_embd 300 --n_layer 6 --n_head 10
+
+python train.py  --gpu 0  --epochs 5 --batch_size 64  --n_embd 300 --n_layer 6 --n_head 10
 ```
 
 # finetune-transformer-lm
