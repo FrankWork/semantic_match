@@ -64,6 +64,8 @@ tflm  5+5   64           83.6  57   33   42.7/67.9  yes              yes
 
 # todo
 
+https://github.com/PaddlePaddle/models/tree/develop/fluid/language_model
+
 - A Structured Self-Attentive Sentence Embedding
 - stacking
 - easy, hard
